@@ -1,0 +1,21 @@
+{
+  "name": "bizpoa-africastalking-sandbox",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Bilingual USSD/SMS business manager starter for Bizpoa",
+  "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "dev:backend": "node --watch src/server.js",
+    "dev:frontend": "npm --workspace frontend run dev",
+    "build:frontend": "npm --workspace frontend run build",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
