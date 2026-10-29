@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build:frontend",
+  "outputDirectory": "frontend/dist",
+  "rewrites": [
+    { "source": "/health", "destination": "/api/health" },
+    { "source": "/ussd", "destination": "/api/ussd" },
+    { "source": "/sms/incoming", "destination": "/api/sms/incoming" },
+    { "source": "/statement/:path*", "destination": "/api/statement/:path*" }
+  ]
+}

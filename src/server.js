@@ -38,22 +38,44 @@ const port = Number(process.env.PORT || 3000);
 const maxBodyBytes = 64 * 1024;
 const authenticateAdmin = createAdminAuthenticator({ env: process.env });
 
-async function readForm(request) {
+function validateBodySize(body) {
+  if (Buffer.byteLength(body) > maxBodyBytes) throw new Error('Request body too large');
+}
+
+async function readRawBody(request) {
+  if (request.body !== undefined) {
+    const raw = Buffer.isBuffer(request.body) || request.body instanceof Uint8Array
+      ? Buffer.from(request.body).toString('utf8')
+      : typeof request.body === 'string' ? request.body : JSON.stringify(request.body ?? '');
+    validateBodySize(raw);
+    return raw;
+  }
   let body = '';
   for await (const chunk of request) {
     body += chunk;
-    if (Buffer.byteLength(body) > maxBodyBytes) throw new Error('Request body too large');
+    validateBodySize(body);
   }
-  return new URLSearchParams(body);
+  return body;
+}
+
+async function readForm(request) {
+  const parsed = request.body;
+  if (parsed && typeof parsed === 'object' && !Buffer.isBuffer(parsed) && !(parsed instanceof Uint8Array)) {
+    validateBodySize(JSON.stringify(parsed));
+    const entries = Object.entries(parsed).flatMap(([key, value]) =>
+      (Array.isArray(value) ? value : [value]).map((item) => [key, String(item ?? '')]));
+    return new URLSearchParams(entries);
+  }
+  return new URLSearchParams(await readRawBody(request));
 }
 
 async function readJson(request) {
-  let body = '';
-  for await (const chunk of request) {
-    body += chunk;
-    if (Buffer.byteLength(body) > maxBodyBytes) throw new Error('Request body too large');
+  const parsed = request.body;
+  if (parsed && typeof parsed === 'object' && !Buffer.isBuffer(parsed) && !(parsed instanceof Uint8Array)) {
+    validateBodySize(JSON.stringify(parsed));
+    return parsed;
   }
-  return JSON.parse(body || '{}');
+  return JSON.parse(await readRawBody(request) || '{}');
 }
 
 function sendText(response, status, body) {
@@ -191,23 +213,35 @@ async function processIncomingSms(message, messageId) {
   if ((language || business) && !mayReply) {
     console.warn('Bizpoa SMS AI reply rate limit reached for a sender.');
   } else if (mayReply && language) {
-    void sendSms({ to: message.phoneNumber, message: languageSavedSms(language) }).then((result) => {
-      if (result.sent) console.log('Bizpoa language SMS reply accepted:', result.statusCode);
-      else console.warn('Bizpoa language SMS reply not sent:', result.reason);
-    });
+    const result = await sendSms({ to: message.phoneNumber, message: languageSavedSms(language) });
+    if (result.sent) console.log('Bizpoa language SMS reply accepted:', result.statusCode);
+    else console.warn('Bizpoa language SMS reply not sent:', result.reason);
   } else if (mayReply && detailResult.saved && detailResult.businessCode) {
     const reply = analysis
       ? `Bizpoa summary: ${analysis.summary}\n${analysis.reply}`
       : fallbackSmsReply({ business, language: languagePreference });
-    void sendSms({ to: message.phoneNumber, message: reply }).then((result) => {
-      if (result.sent) console.log('Bizpoa AI SMS reply accepted:', result.statusCode);
-      else console.warn('Bizpoa AI SMS reply not sent:', result.reason);
-    });
+    const result = await sendSms({ to: message.phoneNumber, message: reply });
+    if (result.sent) console.log('Bizpoa AI SMS reply accepted:', result.statusCode);
+    else console.warn('Bizpoa AI SMS reply not sent:', result.reason);
   }
 }
 
-const server = http.createServer(async (request, response) => {
+export async function handleRequest(request, response, { waitUntil = (promise) => { void promise; } } = {}) {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+  if (url.pathname === '/api/health') url.pathname = '/health';
+  else if (url.pathname === '/api/ussd') url.pathname = '/ussd';
+  else if (url.pathname === '/api/sms/incoming') url.pathname = '/sms/incoming';
+  else if (url.pathname.startsWith('/api/statement/')) url.pathname = url.pathname.slice('/api'.length);
+
+  const scheduleBackground = (promise, label) => {
+    const task = Promise.resolve(promise).catch((error) => console.error(label, error));
+    try {
+      waitUntil(task);
+    } catch (error) {
+      console.error('Could not register background task:', error);
+      void task;
+    }
+  };
 
   if (request.method === 'GET' && url.pathname === '/health') {
     try {
@@ -420,19 +454,19 @@ const server = http.createServer(async (request, response) => {
       const ussdResponse = ussdResult.response;
       sendText(response, 200, ussdResponse);
       if (ussdResult.outboundSms) {
-        void sendSms(ussdResult.outboundSms).then((result) => {
+        scheduleBackground(sendSms(ussdResult.outboundSms).then((result) => {
           if (result.sent) console.log('Bizpoa requested statement SMS accepted by Africa\'s Talking:', result.statusCode);
           else console.warn('Bizpoa statement SMS not sent:', result.reason);
-        });
+        }), 'USSD statement SMS background task failed:');
       }
       if (/^END (?:Business registered|Biashara imesajiliwa)/.test(ussdResponse)) {
         const code = ussdResponse.match(/\bBZ-[A-Z0-9]{6}\b/)?.[0];
         const phoneNumber = form.get('phoneNumber');
         if (code && phoneNumber) {
-          void sendSms({ to: phoneNumber, message: registrationSms(code) }).then((result) => {
+          scheduleBackground(sendSms({ to: phoneNumber, message: registrationSms(code) }).then((result) => {
             if (result.sent) console.log('Bizpoa registration SMS accepted by Africa\'s Talking:', result.statusCode);
             else console.warn('Bizpoa registration SMS not sent:', result.reason);
-          });
+          }), 'Registration SMS background task failed:');
         }
       }
       return;
@@ -451,7 +485,7 @@ const server = http.createServer(async (request, response) => {
       };
       const messageId = form.get('id') || form.get('messageId') || form.get('linkId') || null;
       sendText(response, 200, 'OK');
-      void processIncomingSms(message, messageId).catch((error) => console.error('Incoming SMS processing error:', error));
+      scheduleBackground(processIncomingSms(message, messageId), 'Incoming SMS processing error:');
       return;
     } catch (error) {
       console.error('SMS callback error:', error);
@@ -460,15 +494,28 @@ const server = http.createServer(async (request, response) => {
   }
 
   return sendText(response, 404, 'Not found');
-});
-
-server.listen(port, '0.0.0.0', () => {
-  console.log(`Bizpoa sandbox backend listening on http://localhost:${port}`);
-  console.log(`Storage driver: ${storageDriver}${storageDriver === 'json' ? ` (${dataFile})` : ''}`);
-});
-
-function stop() {
-  server.close(() => process.exit(0));
 }
-process.on('SIGINT', stop);
-process.on('SIGTERM', stop);
+
+function startLocalServer() {
+  const server = http.createServer((request, response) => {
+    void handleRequest(request, response).catch((error) => {
+      console.error('Unhandled Bizpoa request error:', error);
+      if (!response.headersSent) sendJson(response, 500, { error: 'Internal server error.' });
+      else response.end();
+    });
+  });
+  server.listen(port, '0.0.0.0', () => {
+    console.log(`Bizpoa sandbox backend listening on http://localhost:${port}`);
+    console.log(`Storage driver: ${storageDriver}${storageDriver === 'json' ? ` (${dataFile})` : ''}`);
+  });
+  return server;
+}
+
+const isDirectExecution = process.argv[1]
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isDirectExecution) {
+  const server = startLocalServer();
+  const stop = () => server.close(() => process.exit(0));
+  process.on('SIGINT', stop);
+  process.on('SIGTERM', stop);
+}
