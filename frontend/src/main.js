@@ -8,6 +8,12 @@ const state = {
   data: null,
   loading: false,
   error: '',
+  voiceLanguage: 'en',
+  selectedBusinessCode: '',
+  voiceCommand: '',
+  pendingVoice: null,
+  voiceError: '',
+  voiceSuccess: '',
 };
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({
@@ -39,7 +45,7 @@ function showLogin(message = '') {
         <div class="brand-mark">B<span>.</span></div>
         <p class="eyebrow">SMALL BUSINESS MANAGER</p>
         <h1>Your business,<br><em>at a glance.</em></h1>
-        <p class="login-copy">Enter the dashboard token configured in the Bizpoa backend <code>.env</code> file. This dashboard is read-only; record sales and expenses from the USSD menu.</p>
+        <p class="login-copy">Enter the dashboard token configured in the Bizpoa backend <code>.env</code> file. The overview includes a prototype voice/text flow for reviewing and recording demo sales and expenses.</p>
         <form id="login-form" class="login-form">
           <label for="admin-token">Dashboard token</label>
           <input id="admin-token" name="token" type="password" autocomplete="current-password" placeholder="Paste your local admin token" required />
@@ -73,7 +79,6 @@ const views = [
 
 function shell() {
   const current = views.find((item) => item.id === state.view) ?? views[0];
-  const summary = state.data?.summary ?? {};
   root.innerHTML = `
     <div class="app-shell">
       <aside class="sidebar">
@@ -105,6 +110,7 @@ function shell() {
     state.data = null;
     showLogin();
   });
+  bindVoiceAssistant();
 }
 
 function headingCopy(view) {
@@ -127,6 +133,7 @@ function renderView() {
 function renderOverview() {
   const { summary, businesses, transactions, smsNotes } = state.data;
   return `
+    ${renderVoiceAssistant(businesses)}
     <div class="stat-grid">
       ${statCard('Registered businesses', summary.businessCount, 'Across all business types', '01', 'green')}
       ${statCard('Sales', `KES ${money(summary.sales)}`, `From ${summary.transactionCount} recent entries`, '02', 'cream')}
@@ -142,6 +149,183 @@ function renderOverview() {
       </section>
     </div>
     <section class="insight-strip"><div class="insight-number">${String(smsNotes.length).padStart(2, '0')}</div><div><p class="eyebrow">BUSINESS CONTEXT</p><h2>${smsNotes.length ? 'New details from SMS' : 'Make room for the details'}</h2><p>${smsNotes.length ? `${smsNotes.length} message${smsNotes.length === 1 ? '' : 's'} saved from business owners.` : 'Owners can text a Bizpoa ID followed by useful details like location or opening hours.'}</p></div><button class="button button-outline" data-view="sms">View SMS details <span>→</span></button></section>`;
+}
+
+function renderVoiceAssistant(businesses) {
+  const hasBusinesses = businesses.length > 0;
+  if (!businesses.some((business) => business.code === state.selectedBusinessCode)) {
+    state.selectedBusinessCode = businesses[0]?.code ?? '';
+  }
+  const options = businesses.map((business) => `<option value="${escapeHtml(business.code)}" ${business.code === state.selectedBusinessCode ? 'selected' : ''}>${escapeHtml(business.name)} · ${escapeHtml(business.code)}</option>`).join('');
+  const pendingBusiness = businesses.find((business) => business.code === state.pendingVoice?.businessCode);
+  const confirmation = state.pendingVoice && pendingBusiness ? `
+    <div class="voice-confirm" role="region" aria-label="Review transaction before saving">
+      <div><span class="voice-confirm-label">PLEASE REVIEW</span><strong>${state.pendingVoice.type === 'sale' ? 'Sale' : 'Expense'} · KES ${money(state.pendingVoice.amount)}</strong><p>${escapeHtml(pendingBusiness.name)} (${escapeHtml(pendingBusiness.code)})</p></div>
+      <div class="voice-confirm-actions"><button id="cancel-voice" class="button button-light" type="button">Cancel</button><button id="confirm-voice" class="button button-primary" type="button">Confirm and save</button></div>
+    </div>` : '';
+
+  return `
+    <section class="panel voice-panel" aria-labelledby="voice-title">
+      <div class="voice-intro">
+        <div><p class="eyebrow">VOICE DEMO · REVIEW BEFORE SAVING</p><h2 id="voice-title">Talk to Bizpoa</h2><p class="voice-description">Say or type a simple sale or expense command. Check the transcript, then confirm before it is recorded.</p></div>
+        <span class="voice-demo-badge">Prototype</span>
+      </div>
+      ${hasBusinesses ? `
+        <form id="voice-form" class="voice-form">
+          <label class="voice-field business-field"><span>Business</span><select id="voice-business" name="businessCode">${options}</select></label>
+          <label class="voice-field language-field"><span>Language</span><select id="voice-language" name="language"><option value="en" ${state.voiceLanguage === 'en' ? 'selected' : ''}>English</option><option value="sw" ${state.voiceLanguage === 'sw' ? 'selected' : ''}>Kiswahili</option></select></label>
+          <div class="voice-command-field"><label for="voice-command">What should I record?</label><div class="voice-command-row"><input id="voice-command" name="command" value="${escapeHtml(state.voiceCommand)}" placeholder="Record a sale of 300" autocomplete="off" /><button id="voice-microphone" class="button button-mic" type="button" aria-label="Speak a command">${state.listening ? 'Listening…' : 'Use microphone'}</button></div></div>
+          <button class="button button-primary voice-review" type="submit">Review command <span aria-hidden="true">→</span></button>
+        </form>
+        <p class="voice-examples">Try: “sale 300”, “expense 50”, “mauzo 300”, or “matumizi 50”.</p>
+        <p class="voice-note">Speech uses your browser’s built-in recognition when available. You can always type instead. This prototype only understands simple commands with numeric amounts.</p>
+      ` : `<div class="voice-no-business">Register a business through USSD first; then you can try a demo transaction here.</div>`}
+      <p id="voice-status" class="voice-status ${state.voiceError ? 'is-error' : ''}" role="status" aria-live="polite">${escapeHtml(state.voiceError || state.voiceSuccess || '')}</p>
+      ${confirmation}
+    </section>`;
+}
+
+function bindVoiceAssistant() {
+  const form = root.querySelector('#voice-form');
+  if (!form) return;
+  const commandInput = root.querySelector('#voice-command');
+  const status = root.querySelector('#voice-status');
+
+  root.querySelector('#voice-business').addEventListener('change', (event) => {
+    state.selectedBusinessCode = event.currentTarget.value;
+  });
+  root.querySelector('#voice-language').addEventListener('change', (event) => {
+    state.voiceLanguage = event.currentTarget.value;
+  });
+  commandInput.addEventListener('input', (event) => {
+    state.voiceCommand = event.currentTarget.value;
+    state.voiceError = '';
+  });
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    state.voiceCommand = commandInput.value.trim();
+    state.voiceError = '';
+    state.voiceSuccess = '';
+    const parsed = parseVoiceCommand(state.voiceCommand);
+    if (!parsed) {
+      state.voiceError = state.voiceLanguage === 'sw'
+        ? 'Sielewi bado. Jaribu “mauzo 300” au “matumizi 50”.'
+        : 'I couldn’t parse that yet. Try “sale 300” or “expense 50”.';
+      shell();
+      return;
+    }
+    state.pendingVoice = { ...parsed, businessCode: state.selectedBusinessCode };
+    shell();
+  });
+
+  root.querySelector('#voice-microphone').addEventListener('click', () => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) {
+      state.voiceError = state.voiceLanguage === 'sw'
+        ? 'Utambuzi wa sauti haupatikani kwenye kivinjari hiki. Tafadhali andika amri.'
+        : 'Voice recognition is not available in this browser. Please type your command instead.';
+      shell();
+      return;
+    }
+    const recognition = new Recognition();
+    recognition.lang = state.voiceLanguage === 'sw' ? 'sw-KE' : 'en-KE';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.onstart = () => {
+      state.listening = true;
+      state.voiceError = '';
+      const button = root.querySelector('#voice-microphone');
+      if (button) { button.disabled = true; button.textContent = 'Listening…'; }
+      if (status) status.textContent = state.voiceLanguage === 'sw' ? 'Sikiliza… sema amri yako.' : 'Listening… say your command.';
+    };
+    recognition.onresult = (event) => {
+      state.voiceCommand = event.results?.[0]?.[0]?.transcript ?? '';
+      if (commandInput) commandInput.value = state.voiceCommand;
+      if (status) status.textContent = state.voiceLanguage === 'sw'
+        ? 'Maneno yameandikwa. Yahakiki na uyarekebishe kabla ya kuendelea.'
+        : 'Transcript ready. Review or edit it before continuing.';
+    };
+    recognition.onerror = (event) => {
+      state.voiceError = event.error === 'not-allowed'
+        ? (state.voiceLanguage === 'sw' ? 'Ruhusu matumizi ya maikrofoni kwenye kivinjari, au andika amri.' : 'Allow microphone access in your browser, or type your command instead.')
+        : (state.voiceLanguage === 'sw' ? 'Sauti haikupatikana vizuri. Jaribu tena au andika amri.' : 'I couldn’t hear that clearly. Try again or type your command.');
+    };
+    recognition.onend = () => {
+      state.listening = false;
+      const button = root.querySelector('#voice-microphone');
+      if (button) { button.disabled = false; button.textContent = 'Use microphone'; }
+      if (state.voiceError && status) {
+        status.textContent = state.voiceError;
+        status.classList.add('is-error');
+      }
+    };
+    try { recognition.start(); } catch {
+      state.voiceError = 'The microphone is already active. Wait a moment and try again.';
+      if (status) status.textContent = state.voiceError;
+    }
+  });
+
+  root.querySelector('#cancel-voice')?.addEventListener('click', () => {
+    state.pendingVoice = null;
+    state.voiceError = '';
+    state.voiceSuccess = '';
+    shell();
+  });
+  root.querySelector('#confirm-voice')?.addEventListener('click', saveVoiceTransaction);
+}
+
+function parseVoiceCommand(command) {
+  const normalized = command.toLocaleLowerCase().replace(/[’']/g, '').trim();
+  const isSale = /\b(?:sale|sales|mauzo)\b/.test(normalized);
+  const isExpense = /\b(?:expense|expenses|matumizi)\b/.test(normalized);
+  if (isSale === isExpense) return null;
+  const amountMatch = normalized.match(/\b\d[\d,]*(?:\.\d{1,2})?\b/);
+  if (!amountMatch) return null;
+  const amount = Number(amountMatch[0].replace(/,/g, ''));
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 999_999_999.99 || Math.round(amount * 100) !== amount * 100) return null;
+  return { type: isSale ? 'sale' : 'expense', amount };
+}
+
+async function saveVoiceTransaction() {
+  const button = root.querySelector('#confirm-voice');
+  if (!state.pendingVoice || !button) return;
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  try {
+    const response = await fetch('/api/voice/record', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(state.pendingVoice),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      const message = payload.error === 'unknown_business'
+        ? 'That business was not found. Refresh the dashboard and try again.'
+        : 'The transaction could not be saved. Check the details and try again.';
+      throw new Error(message);
+    }
+    const isSwahili = state.voiceLanguage === 'sw';
+    const amount = money(payload.transaction.amount);
+    state.voiceSuccess = isSwahili
+      ? `${payload.transaction.type === 'sale' ? 'Mauzo' : 'Matumizi'} ya KES ${amount} yamerekodiwa kwa ${payload.business.name}.`
+      : `${payload.transaction.type === 'sale' ? 'Sale' : 'Expense'} of KES ${amount} recorded for ${payload.business.name}.`;
+    state.pendingVoice = null;
+    state.voiceCommand = '';
+    state.voiceError = '';
+    await loadDashboard();
+    speakConfirmation(state.voiceSuccess, isSwahili ? 'sw-KE' : 'en-KE');
+  } catch (error) {
+    state.voiceError = error.message || 'Could not save this transaction.';
+    shell();
+  }
+}
+
+function speakConfirmation(message, language) {
+  if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(message);
+  utterance.lang = language;
+  window.speechSynthesis.speak(utterance);
 }
 
 function statCard(label, value, caption, number, tone) {

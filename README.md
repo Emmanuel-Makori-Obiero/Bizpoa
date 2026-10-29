@@ -42,7 +42,7 @@ Open a second Git Bash window, go to the same `Bizpoa` folder, and run:
 npm run dev:frontend
 ```
 
-Open the Vite URL printed in that terminal, normally `http://localhost:5173`. Enter the value of `BIZPOA_ADMIN_TOKEN` from `.env`. The frontend proxies dashboard requests to the backend. The dashboard API is read-only and requires the token; the token is held in the current browser tab, not included in frontend source.
+Open the Vite URL printed in that terminal, normally `http://localhost:5173`. Enter the value of `BIZPOA_ADMIN_TOKEN` from `.env`. The frontend proxies dashboard requests to the backend. The dashboard token is held in the current browser tab, not included in frontend source.
 
 Run automated tests from either Git Bash window in the project folder:
 
@@ -69,6 +69,12 @@ The first USSD session asks for English or Kiswahili. The main menu offers busin
 When the Africa's Talking sandbox API key is configured, Bizpoa sends the ID and SMS instructions to the phone number used for registration. The owner can send a message such as `BZ-ABC123, located near the market; opens at 7am` to the SMS shortcode. Bizpoa checks that the ID matches the sender's registered phone before linking the detail to that business, then attempts to send a receipt SMS. SMS replies are received at `/sms/incoming`.
 
 The sandbox routes SMS through its simulator rather than an ordinary handset. Live SMS requires live Africa's Talking credentials and may incur charges. Do not switch to `AT_ENV=live` while testing.
+
+## Try the voice transaction demo
+
+After signing in, open the Overview and choose a registered business. Type a command or select English/Kiswahili and press **Use microphone**. Example commands include `sale 300`, `expense 50`, `mauzo 300`, and `matumizi 50`. Review the transcript and proposed amount, then select **Confirm and save** to add the transaction to the local JSON database.
+
+This is a deliberately small prototype: it uses browser-provided speech recognition when supported, falls back to typed commands, recognizes only simple sale/expense commands with numeric amounts, and speaks a short confirmation when browser speech synthesis is available. It does not use ElevenLabs or an AI model. The demo write endpoint is protected by the same single admin token as the dashboard; do not expose it publicly or use it for real accounting until per-business authentication, a proper database, audit controls, and financial safeguards are implemented. Microphone access and language support depend on the browser; HTTPS or `localhost` may be required.
 
 ## Before production
 

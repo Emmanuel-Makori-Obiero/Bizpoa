@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createStore } from './storage.js';
 import { handleUssd, saveSmsBusinessDetail, saveSmsLanguage } from './ussd.js';
 import { detailsSavedSms, registrationSms, sendSms } from './africastalking.js';
+import { recordVoiceTransaction } from './voice.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,6 +37,15 @@ async function readForm(request) {
     if (Buffer.byteLength(body) > maxBodyBytes) throw new Error('Request body too large');
   }
   return new URLSearchParams(body);
+}
+
+async function readJson(request) {
+  let body = '';
+  for await (const chunk of request) {
+    body += chunk;
+    if (Buffer.byteLength(body) > maxBodyBytes) throw new Error('Request body too large');
+  }
+  return JSON.parse(body || '{}');
 }
 
 function sendText(response, status, body) {
@@ -108,6 +118,30 @@ const server = http.createServer(async (request, response) => {
     } catch (error) {
       console.error('Dashboard data error:', error);
       return sendJson(response, 500, { error: 'Could not load dashboard data.' });
+    }
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/voice/record') {
+    if (!process.env.BIZPOA_ADMIN_TOKEN) {
+      return sendJson(response, 503, { error: 'Dashboard is not configured. Set BIZPOA_ADMIN_TOKEN in the backend .env file.' });
+    }
+    if (!hasValidAdminToken(request)) {
+      return sendJson(response, 401, { error: 'Enter the correct Bizpoa dashboard token.' });
+    }
+    try {
+      const payload = await readJson(request);
+      const result = await recordVoiceTransaction(payload, store);
+      if (!result.ok) {
+        const status = result.reason === 'unknown_business' ? 404 : 400;
+        return sendJson(response, status, { error: result.reason });
+      }
+      return sendJson(response, 201, { transaction: result.transaction, business: result.business });
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message === 'Request body too large') {
+        return sendJson(response, 400, { error: 'Request body must be valid JSON and no larger than 64 KB.' });
+      }
+      console.error('Voice transaction error:', error);
+      return sendJson(response, 500, { error: 'Could not record the transaction.' });
     }
   }
 
