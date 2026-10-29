@@ -2,7 +2,7 @@
 
 Bizpoa is a bilingual English/Kiswahili starter for small businesses. Owners register through Africa's Talking USSD, receive a unique Bizpoa ID by SMS when outbound SMS is configured, record sales and expenses, and can send code-prefixed business details back by SMS. A local admin dashboard shows registered businesses, recent transactions, and SMS notes.
 
-This is a prototype, not production accounting software. Data is kept in a local JSON file, summaries use UTC dates, and Gemini/AI is not integrated yet.
+This is a prototype, not production accounting software. Data is kept in a local JSON file and summaries use UTC dates. The voice demo uses Gemini to interpret owner commands, but it does not save anything until the owner confirms the proposed transaction.
 
 ## Run on Windows with Git Bash
 
@@ -22,7 +22,7 @@ In `.env`, set a private dashboard token. You can generate a random token from G
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Copy the generated value into `BIZPOA_ADMIN_TOKEN`. For Africa's Talking sandbox SMS, also set `AT_API_KEY` to the sandbox API key and leave `AT_ENV=sandbox` and `AT_USERNAME=sandbox`. Do not paste secrets into source code or commit `.env`; it is ignored by Git. You can start the dashboard without an AT key, but outbound SMS will be skipped.
+Copy the generated value into `BIZPOA_ADMIN_TOKEN`. To enable AI voice-command review, create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey) and set it as `GEMINI_API_KEY` in `.env`. The server uses `gemini-3.8-flash` by default; you can override it with `BIZPOA_AI_MODEL`. Keep the key in the backend environment only—never paste it into frontend source code or commit it. For Africa's Talking sandbox SMS, set `AT_API_KEY` and leave `AT_ENV=sandbox` and `AT_USERNAME=sandbox`. Without a Gemini key, the dashboard works but AI command review shows a configuration message; without an AT key, outbound SMS is skipped.
 
 ### Start the backend
 
@@ -72,9 +72,9 @@ The sandbox routes SMS through its simulator rather than an ordinary handset. Li
 
 ## Try the voice transaction demo
 
-After signing in, open the Overview and choose a registered business. Type a command or select English/Kiswahili and press **Use microphone**. Example commands include `sale 300`, `expense 50`, `mauzo 300`, and `matumizi 50`. Review the transcript and proposed amount, then select **Confirm and save** to add the transaction to the local JSON database.
+After signing in, open the Overview and choose a registered business. Select English or Kiswahili and press **Use microphone**, or type a request in your own words. For example, say “I sold three hundred shillings of tomatoes” or “Nilinunua bidhaa za duka kwa mia tano.” Press **Review with AI** to have Gemini interpret the command. It shows a proposed sale or expense and amount, or asks for clarification if something is missing or ambiguous. Check the proposal and press **Confirm and save** to add the transaction to the local JSON database.
 
-This is a deliberately small prototype: it uses browser-provided speech recognition when supported, falls back to typed commands, recognizes only simple sale/expense commands with numeric amounts, and speaks a short confirmation when browser speech synthesis is available. It does not use ElevenLabs or an AI model. The demo write endpoint is protected by the same single admin token as the dashboard; do not expose it publicly or use it for real accounting until per-business authentication, a proper database, audit controls, and financial safeguards are implemented. Microphone access and language support depend on the browser; HTTPS or `localhost` may be required.
+Speech input is transcribed by the browser when supported; the server sends the resulting text to Gemini for structured interpretation. The Gemini key stays on the server, and the AI review endpoint never writes to the ledger. The final write still passes backend validation and requires the owner's explicit confirmation. The demo write endpoint is protected by the same single admin token as the dashboard; do not use it for real accounting until per-business authentication, a persistent database, audit controls, and financial safeguards are implemented. Microphone access and language support depend on the browser; HTTPS or `localhost` may be required.
 
 ## Before production
 

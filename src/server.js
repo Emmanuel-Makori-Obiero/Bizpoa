@@ -7,6 +7,7 @@ import { createStore } from './storage.js';
 import { handleUssd, saveSmsBusinessDetail, saveSmsLanguage } from './ussd.js';
 import { detailsSavedSms, registrationSms, sendSms } from './africastalking.js';
 import { recordVoiceTransaction } from './voice.js';
+import { reviewVoiceCommand } from './voice-review.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -142,6 +143,32 @@ const server = http.createServer(async (request, response) => {
       }
       console.error('Voice transaction error:', error);
       return sendJson(response, 500, { error: 'Could not record the transaction.' });
+    }
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/voice/review') {
+    if (!process.env.BIZPOA_ADMIN_TOKEN) {
+      return sendJson(response, 503, { error: 'Dashboard is not configured. Set BIZPOA_ADMIN_TOKEN in the backend .env file.' });
+    }
+    if (!hasValidAdminToken(request)) {
+      return sendJson(response, 401, { error: 'Enter the correct Bizpoa dashboard token.' });
+    }
+    try {
+      const payload = await readJson(request);
+      const result = await reviewVoiceCommand(payload, { store });
+      if (!result.ok) {
+        const status = result.reason === 'missing_ai_key' ? 503
+          : result.reason === 'unknown_business' ? 404
+            : result.reason === 'ai_unavailable' || result.reason === 'ai_provider_error' ? 502 : 400;
+        return sendJson(response, status, { error: result.reason });
+      }
+      return sendJson(response, 200, result);
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message === 'Request body too large') {
+        return sendJson(response, 400, { error: 'Request body must be valid JSON and no larger than 64 KB.' });
+      }
+      console.error('Voice review error:', error);
+      return sendJson(response, 500, { error: 'Could not review the command.' });
     }
   }
 

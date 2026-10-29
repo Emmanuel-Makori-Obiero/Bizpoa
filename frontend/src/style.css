@@ -172,3 +172,8 @@ h1, h2, h3, p { margin-top: 0; }
   .voice-command-row input { flex-basis: 100%; }
   .button-mic { width: 100%; }
 }
+
+.voice-ai-clarification { margin-top: 12px; padding: 13px 14px; border: 1px solid #ecd8bd; border-radius: 9px; background: #fff8e9; }
+.voice-ai-clarification strong { display: block; margin-bottom: 6px; color: #765432; font-size: 11px; }
+.voice-ai-clarification p { margin: 4px 0; color: #5f665a; font-size: 11px; line-height: 1.5; }
+.voice-ai-clarification small { display: block; margin-top: 7px; color: #918574; font-size: 9px; line-height: 1.5; }

@@ -12,6 +12,8 @@ const state = {
   selectedBusinessCode: '',
   voiceCommand: '',
   pendingVoice: null,
+  voiceReview: null,
+  voiceReviewing: false,
   voiceError: '',
   voiceSuccess: '',
 };
@@ -172,14 +174,16 @@ function renderVoiceAssistant(businesses) {
   const pendingBusiness = businesses.find((business) => business.code === state.pendingVoice?.businessCode);
   const confirmation = state.pendingVoice && pendingBusiness ? `
     <div class="voice-confirm" role="region" aria-label="Review transaction before saving">
-      <div><span class="voice-confirm-label">PLEASE REVIEW</span><strong>${state.pendingVoice.type === 'sale' ? 'Sale' : 'Expense'} · KES ${money(state.pendingVoice.amount)}</strong><p>${escapeHtml(pendingBusiness.name)} (${escapeHtml(pendingBusiness.code)})</p></div>
+      <div><span class="voice-confirm-label">AI UNDERSTOOD</span><strong>${escapeHtml(state.pendingVoice.summary)}</strong><p>${state.pendingVoice.type === 'sale' ? 'Sale' : 'Expense'} · KES ${money(state.pendingVoice.amount)} · ${escapeHtml(pendingBusiness.name)}</p></div>
       <div class="voice-confirm-actions"><button id="cancel-voice" class="button button-light" type="button">Cancel</button><button id="confirm-voice" class="button button-primary" type="button">Confirm and save</button></div>
     </div>` : '';
+  const clarification = state.voiceReview && !state.voiceReview.ready ? `
+    <div class="voice-ai-clarification" role="status"><strong>I need to check one thing</strong><p>${escapeHtml(state.voiceReview.summary)}</p><p>${escapeHtml(state.voiceReview.clarification)}</p><small>Edit or add details to your command, then ask me to review it again.</small></div>` : '';
 
   return `
     <section class="panel voice-panel" aria-labelledby="voice-title">
       <div class="voice-intro">
-        <div><p class="eyebrow">VOICE DEMO · REVIEW BEFORE SAVING</p><h2 id="voice-title">Talk to Bizpoa</h2><p class="voice-description">Say or type a simple sale or expense command. Check the transcript, then confirm before it is recorded.</p></div>
+        <div><p class="eyebrow">AI VOICE REVIEW · CONFIRM BEFORE SAVING</p><h2 id="voice-title">Talk to Bizpoa</h2><p class="voice-description">Say or type naturally. AI will explain what it understood and ask if anything is unclear. Nothing is saved until you confirm.</p></div>
         <span class="voice-demo-badge">Prototype</span>
       </div>
       ${hasBusinesses ? `
@@ -187,12 +191,13 @@ function renderVoiceAssistant(businesses) {
           <label class="voice-field business-field"><span>Business</span><select id="voice-business" name="businessCode">${options}</select></label>
           <label class="voice-field language-field"><span>Language</span><select id="voice-language" name="language"><option value="en" ${state.voiceLanguage === 'en' ? 'selected' : ''}>English</option><option value="sw" ${state.voiceLanguage === 'sw' ? 'selected' : ''}>Kiswahili</option></select></label>
           <div class="voice-command-field"><label for="voice-command">What should I record?</label><div class="voice-command-row"><input id="voice-command" name="command" value="${escapeHtml(state.voiceCommand)}" placeholder="Record a sale of 300" autocomplete="off" /><button id="voice-microphone" class="button button-mic" type="button" aria-label="Speak a command">${state.listening ? 'Listening…' : 'Use microphone'}</button></div></div>
-          <button class="button button-primary voice-review" type="submit">Review command <span aria-hidden="true">→</span></button>
+          <button class="button button-primary voice-review" type="submit" ${state.voiceReviewing ? 'disabled' : ''}>${state.voiceReviewing ? 'AI is reviewing…' : 'Review with AI'} <span aria-hidden="true">→</span></button>
         </form>
-        <p class="voice-examples">Try: “sale 300”, “expense 50”, “mauzo 300”, or “matumizi 50”.</p>
-        <p class="voice-note">Speech uses your browser’s built-in recognition when available. You can always type instead. This prototype only understands simple commands with numeric amounts.</p>
+        <p class="voice-examples">Try speaking naturally: “I sold three hundred shillings of tomatoes” or “Nilinunua bidhaa za duka kwa mia tano.”</p>
+        <p class="voice-note">Your browser transcribes speech; Gemini AI reviews the words. You can edit the transcript before review. AI is only for understanding and does not save anything by itself.</p>
       ` : `<div class="voice-no-business">Register a business through USSD first; then you can try a demo transaction here.</div>`}
       <p id="voice-status" class="voice-status ${state.voiceError ? 'is-error' : ''}" role="status" aria-live="polite">${escapeHtml(state.voiceError || state.voiceSuccess || '')}</p>
+      ${clarification}
       ${confirmation}
     </section>`;
 }
@@ -205,6 +210,8 @@ function bindVoiceAssistant() {
 
   root.querySelector('#voice-business').addEventListener('change', (event) => {
     state.selectedBusinessCode = event.currentTarget.value;
+    state.pendingVoice = null;
+    state.voiceReview = null;
   });
   root.querySelector('#voice-language').addEventListener('change', (event) => {
     state.voiceLanguage = event.currentTarget.value;
@@ -212,22 +219,22 @@ function bindVoiceAssistant() {
   commandInput.addEventListener('input', (event) => {
     state.voiceCommand = event.currentTarget.value;
     state.voiceError = '';
+    state.pendingVoice = null;
+    state.voiceReview = null;
   });
-  form.addEventListener('submit', (event) => {
+  form.addEventListener('submit', async (event) => {
     event.preventDefault();
     state.voiceCommand = commandInput.value.trim();
     state.voiceError = '';
     state.voiceSuccess = '';
-    const parsed = parseVoiceCommand(state.voiceCommand);
-    if (!parsed) {
-      state.voiceError = state.voiceLanguage === 'sw'
-        ? 'Sielewi bado. Jaribu “mauzo 300” au “matumizi 50”.'
-        : 'I couldn’t parse that yet. Try “sale 300” or “expense 50”.';
+    state.voiceReview = null;
+    state.pendingVoice = null;
+    if (!state.voiceCommand) {
+      state.voiceError = state.voiceLanguage === 'sw' ? 'Tafadhali sema au andika unachotaka kurekodi.' : 'Please say or type what you want me to record.';
       shell();
       return;
     }
-    state.pendingVoice = { ...parsed, businessCode: state.selectedBusinessCode };
-    shell();
+    await reviewVoiceCommand();
   });
 
   root.querySelector('#voice-microphone').addEventListener('click', () => {
@@ -286,16 +293,41 @@ function bindVoiceAssistant() {
   root.querySelector('#confirm-voice')?.addEventListener('click', saveVoiceTransaction);
 }
 
-function parseVoiceCommand(command) {
-  const normalized = command.toLocaleLowerCase().replace(/[’']/g, '').trim();
-  const isSale = /\b(?:sale|sales|mauzo)\b/.test(normalized);
-  const isExpense = /\b(?:expense|expenses|matumizi)\b/.test(normalized);
-  if (isSale === isExpense) return null;
-  const amountMatch = normalized.match(/\b\d[\d,]*(?:\.\d{1,2})?\b/);
-  if (!amountMatch) return null;
-  const amount = Number(amountMatch[0].replace(/,/g, ''));
-  if (!Number.isFinite(amount) || amount <= 0 || amount > 999_999_999.99 || Math.round(amount * 100) !== amount * 100) return null;
-  return { type: isSale ? 'sale' : 'expense', amount };
+async function reviewVoiceCommand() {
+  state.voiceReviewing = true;
+  shell();
+  try {
+    const response = await fetch('/api/voice/review', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: state.voiceCommand, businessCode: state.selectedBusinessCode }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      const messages = {
+        missing_ai_key: 'AI review is not configured yet. The site owner needs to add GEMINI_API_KEY to the backend environment settings.',
+        ai_unavailable: 'The AI service could not be reached. Please try again in a moment.',
+        ai_provider_error: 'The AI service could not review this command right now. Please try again later.',
+        unknown_business: 'That business could not be found. Refresh the dashboard and try again.',
+        command_too_long: 'Please shorten the command and try again.',
+      };
+      throw new Error(messages[payload.error] || 'AI could not review this command. Please try again.');
+    }
+    state.voiceReview = payload.review;
+    if (payload.review.ready) {
+      state.pendingVoice = {
+        type: payload.review.type,
+        amount: payload.review.amount,
+        businessCode: payload.business.code,
+        summary: payload.review.summary,
+      };
+    }
+  } catch (error) {
+    state.voiceError = error.message || 'AI could not review this command. Please try again.';
+  } finally {
+    state.voiceReviewing = false;
+    shell();
+  }
 }
 
 async function saveVoiceTransaction() {
