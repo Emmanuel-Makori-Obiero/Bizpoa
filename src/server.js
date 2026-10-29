@@ -1,9 +1,9 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createStore } from './storage.js';
+import { createAdminAuthenticator } from './auth.js';
 import { handleUssd, saveSmsBusinessDetail, saveSmsLanguage } from './ussd.js';
 import { detailsSavedSms, registrationSms, sendSms } from './africastalking.js';
 import { recordVoiceTransaction } from './voice.js';
@@ -30,6 +30,7 @@ const dataFile = process.env.DATA_FILE || path.resolve(here, '../data/bizpoa.jso
 const store = createStore(dataFile);
 const port = Number(process.env.PORT || 3000);
 const maxBodyBytes = 64 * 1024;
+const authenticateAdmin = createAdminAuthenticator({ env: process.env });
 
 async function readForm(request) {
   let body = '';
@@ -65,15 +66,6 @@ function sendJson(response, status, body) {
   response.end(JSON.stringify(body));
 }
 
-function hasValidAdminToken(request) {
-  const expected = process.env.BIZPOA_ADMIN_TOKEN;
-  const supplied = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
-  if (!expected || !supplied) return false;
-  const expectedBytes = Buffer.from(expected);
-  const suppliedBytes = Buffer.from(supplied);
-  return expectedBytes.length === suppliedBytes.length && timingSafeEqual(expectedBytes, suppliedBytes);
-}
-
 function dashboardData(database) {
   const today = new Date().toISOString().slice(0, 10);
   const weekStartDate = new Date(`${today}T00:00:00.000Z`);
@@ -107,12 +99,8 @@ const server = http.createServer(async (request, response) => {
   }
 
   if (request.method === 'GET' && url.pathname === '/api/dashboard') {
-    if (!process.env.BIZPOA_ADMIN_TOKEN) {
-      return sendJson(response, 503, { error: 'Dashboard is not configured. Set BIZPOA_ADMIN_TOKEN in the backend .env file.' });
-    }
-    if (!hasValidAdminToken(request)) {
-      return sendJson(response, 401, { error: 'Enter the correct Bizpoa dashboard token.' });
-    }
+    const auth = await authenticateAdmin(request);
+    if (!auth.ok) return sendJson(response, auth.status, { error: auth.error });
     try {
       const payload = await store.read(dashboardData);
       return sendJson(response, 200, payload);
@@ -123,12 +111,8 @@ const server = http.createServer(async (request, response) => {
   }
 
   if (request.method === 'POST' && url.pathname === '/api/voice/record') {
-    if (!process.env.BIZPOA_ADMIN_TOKEN) {
-      return sendJson(response, 503, { error: 'Dashboard is not configured. Set BIZPOA_ADMIN_TOKEN in the backend .env file.' });
-    }
-    if (!hasValidAdminToken(request)) {
-      return sendJson(response, 401, { error: 'Enter the correct Bizpoa dashboard token.' });
-    }
+    const auth = await authenticateAdmin(request);
+    if (!auth.ok) return sendJson(response, auth.status, { error: auth.error });
     try {
       const payload = await readJson(request);
       const result = await recordVoiceTransaction(payload, store);
@@ -147,12 +131,8 @@ const server = http.createServer(async (request, response) => {
   }
 
   if (request.method === 'POST' && url.pathname === '/api/voice/review') {
-    if (!process.env.BIZPOA_ADMIN_TOKEN) {
-      return sendJson(response, 503, { error: 'Dashboard is not configured. Set BIZPOA_ADMIN_TOKEN in the backend .env file.' });
-    }
-    if (!hasValidAdminToken(request)) {
-      return sendJson(response, 401, { error: 'Enter the correct Bizpoa dashboard token.' });
-    }
+    const auth = await authenticateAdmin(request);
+    if (!auth.ok) return sendJson(response, auth.status, { error: auth.error });
     try {
       const payload = await readJson(request);
       const result = await reviewVoiceCommand(payload, { store });

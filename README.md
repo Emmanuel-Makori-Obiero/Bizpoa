@@ -2,7 +2,7 @@
 
 Bizpoa is a bilingual English/Kiswahili starter for small businesses. Owners register through Africa's Talking USSD, receive a unique Bizpoa ID by SMS when outbound SMS is configured, record sales and expenses, and can send code-prefixed business details back by SMS. A local admin dashboard shows registered businesses, recent transactions, and SMS notes.
 
-This is a prototype, not production accounting software. Data is kept in a local JSON file and summaries use UTC dates. The voice demo uses Gemini to interpret owner commands, but it does not save anything until the owner confirms the proposed transaction.
+This is a prototype, not production accounting software. Business data is kept in a local JSON file and summaries use UTC dates. The dashboard includes Gemini-reviewed transaction entry and an ElevenLabs browser voice agent; neither should be used as production accounting until the storage and security architecture is upgraded.
 
 ## Run on Windows with Git Bash
 
@@ -16,13 +16,9 @@ cp .env.example .env
 notepad .env
 ```
 
-In `.env`, set a private dashboard token. You can generate a random token from Git Bash:
+Set `BIZPOA_ADMIN_EMAIL` in `.env` to the one email account allowed to open the admin dashboard. The Supabase URL and publishable key in `.env.example` point at the connected Bizpoa project and are public client configuration; never use a Supabase service-role key in the browser.
 
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
-
-Copy the generated value into `BIZPOA_ADMIN_TOKEN`. To enable AI voice-command review, create a Gemini API key in [Google AI Studio](https://aistudio.google.com/apikey) and set it as `GEMINI_API_KEY` in `.env`. The server uses `gemini-3.8-flash` by default; you can override it with `BIZPOA_AI_MODEL`. Keep the key in the backend environment only—never paste it into frontend source code or commit it. For Africa's Talking sandbox SMS, set `AT_API_KEY` and leave `AT_ENV=sandbox` and `AT_USERNAME=sandbox`. Without a Gemini key, the dashboard works but AI command review shows a configuration message; without an AT key, outbound SMS is skipped.
+Create an email/password user in the Supabase Auth section or use the sign-up form in the app, then confirm the email if Supabase requests it. Only the email matching `BIZPOA_ADMIN_EMAIL` is authorized by the Node backend. Do not share the password in chat or commit `.env`; it is ignored by Git. To enable AI transaction review, the current Node backend needs `GEMINI_API_KEY` in its own environment (for local development, `.env`; for a hosted Node backend, its server environment settings). A key stored only as a Supabase Edge Function secret is not automatically available to this Node server. For Africa's Talking sandbox SMS, set `AT_API_KEY` and leave `AT_ENV=sandbox` and `AT_USERNAME=sandbox`.
 
 ### Start the backend
 
@@ -42,7 +38,7 @@ Open a second Git Bash window, go to the same `Bizpoa` folder, and run:
 npm run dev:frontend
 ```
 
-Open the Vite URL printed in that terminal, normally `http://localhost:5173`. Enter the value of `BIZPOA_ADMIN_TOKEN` from `.env`. The frontend proxies dashboard requests to the backend. The dashboard token is held in the current browser tab, not included in frontend source.
+Open the Vite URL printed in that terminal, normally `http://localhost:5173`. Sign in with the Supabase Auth email and password for the email configured as `BIZPOA_ADMIN_EMAIL`. The frontend sends the Supabase access token to the backend, which verifies it with Supabase before returning dashboard data.
 
 Run automated tests from either Git Bash window in the project folder:
 
@@ -70,12 +66,14 @@ When the Africa's Talking sandbox API key is configured, Bizpoa sends the ID and
 
 The sandbox routes SMS through its simulator rather than an ordinary handset. Live SMS requires live Africa's Talking credentials and may incur charges. Do not switch to `AT_ENV=live` while testing.
 
-## Try the voice transaction demo
+## AI voice and call demo
 
-After signing in, open the Overview and choose a registered business. Select English or Kiswahili and press **Use microphone**, or type a request in your own words. For example, say “I sold three hundred shillings of tomatoes” or “Nilinunua bidhaa za duka kwa mia tano.” Press **Review with AI** to have Gemini interpret the command. It shows a proposed sale or expense and amount, or asks for clarification if something is missing or ambiguous. Check the proposal and press **Confirm and save** to add the transaction to the local JSON database.
+The sign-in page has **Try the AI voice demo**; signed-in users can also open **AI Call** in the dashboard. This starts a live voice conversation in the browser using the Bizpoa Voice Assistant ElevenLabs agent (`agent_5301m63nex5rfxe9phm907ng2r57`). Allow microphone access and speak naturally. The agent identifies itself as AI and can discuss a sale or expense, but it is not connected to business records and cannot save transactions.
 
-Speech input is transcribed by the browser when supported; the server sends the resulting text to Gemini for structured interpretation. The Gemini key stays on the server, and the AI review endpoint never writes to the ledger. The final write still passes backend validation and requires the owner's explicit confirmation. The demo write endpoint is protected by the same single admin token as the dashboard; do not use it for real accounting until per-business authentication, a persistent database, audit controls, and financial safeguards are implemented. Microphone access and language support depend on the browser; HTTPS or `localhost` may be required.
+The Overview's transaction assistant remains separate: it transcribes speech in the browser, sends the text to Gemini through the Node backend, and requires the owner to review and confirm before writing a demo transaction to the local JSON database. The Gemini key must therefore be configured in that backend's environment; storing it only in Supabase does not connect it automatically.
+
+This is a browser voice conversation, not a telephone call. ElevenLabs currently has no phone number connected to this project. To place or receive real phone calls, connect a Twilio number or SIP trunk to ElevenLabs first; only then can an outbound test be made to a specific recipient after they agree to receive it. Once the website is published, restrict the ElevenLabs agent to the site domain using its allowlist to reduce unauthorized use.
 
 ## Before production
 
-The JSON data file and single dashboard admin token are for a prototype only. Before handling real business data, use a database, per-user access control, backups, privacy protections, appropriate time zones, and hardened authentication. Do not expose secrets to browser code. Gemini should only be connected through the backend and only execute validated business actions.
+Supabase Auth now protects the dashboard, but business records still live in a local JSON file and the conversational agent is not connected to the ledger. Before handling real business data, migrate records to Supabase with row-level security, keep the API keys in server-side secrets, add audit controls and backups, and test financial safeguards. Do not expose service-role, Gemini, or ElevenLabs keys to browser code.

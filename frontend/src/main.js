@@ -1,9 +1,11 @@
 import './style.css';
+import { supabase } from './supabase.js';
+import { BIZPOA_VOICE_AGENT_ID } from './voice-agent.js';
 
 const root = document.querySelector('#app');
-const tokenKey = 'bizpoa-admin-token';
 const state = {
-  token: sessionStorage.getItem(tokenKey) || '',
+  session: null,
+  authMode: 'sign-in',
   view: 'overview',
   data: null,
   loading: false,
@@ -41,22 +43,27 @@ function maskPhone(value = '') {
 }
 
 function showLogin(message = '') {
+  const creatingAccount = state.authMode === 'sign-up';
   root.innerHTML = `
     <main class="login-wrap">
       <section class="login-card">
         <div class="brand-mark">B<span>.</span></div>
         <p class="eyebrow">SMALL BUSINESS MANAGER</p>
         <h1>Your business,<br><em>at a glance.</em></h1>
-        <p class="login-copy">Enter the dashboard token configured in the Bizpoa backend <code>.env</code> file. The overview includes a prototype voice/text flow for reviewing and recording demo sales and expenses.</p>
-        <form id="login-form" class="login-form">
-          <div class="password-field"><label for="admin-token">Dashboard token</label><div class="password-input-wrap">
-            <input id="admin-token" name="token" type="password" autocomplete="current-password" placeholder="Paste your local admin token" required />
-            <button id="toggle-token-visibility" class="password-toggle" type="button" aria-controls="admin-token" aria-pressed="false" aria-label="Show dashboard token">Show</button>
+        <p class="login-copy">${creatingAccount ? 'Create your Bizpoa admin account with an email and password.' : 'Sign in with your Bizpoa admin email and password.'} Passwords are securely handled by Supabase Auth.</p>
+        <form id="auth-form" class="login-form">
+          <label for="auth-email">Email address</label>
+          <input id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+          <div class="password-field"><label for="auth-password">Password</label><div class="password-input-wrap">
+            <input id="auth-password" name="password" type="password" minlength="8" autocomplete="${creatingAccount ? 'new-password' : 'current-password'}" placeholder="${creatingAccount ? 'Choose at least 8 characters' : 'Enter your password'}" required />
+            <button id="toggle-password-visibility" class="password-toggle" type="button" aria-controls="auth-password" aria-pressed="false" aria-label="Show password">Show</button>
           </div></div>
-          <button class="button button-primary" type="submit">Open dashboard <span aria-hidden="true">→</span></button>
+          <button class="button button-primary" type="submit">${creatingAccount ? 'Create account' : 'Sign in'} <span aria-hidden="true">→</span></button>
         </form>
         <p class="login-error" role="alert">${escapeHtml(message)}</p>
-        <p class="login-footnote">Your token stays in this browser tab and is sent only to your local Bizpoa backend.</p>
+        <button id="toggle-auth-mode" class="text-link auth-mode-toggle" type="button">${creatingAccount ? 'Already have an account? Sign in' : 'Need an account? Create one'}</button>
+        <button id="open-public-voice-demo" class="button button-outline login-voice-demo" type="button">Try the AI voice demo <span aria-hidden="true">↗</span></button>
+        <p class="login-footnote">Only the admin email configured for this Bizpoa backend can open the dashboard. Never share your password.</p>
       </section>
       <aside class="login-aside">
         <div class="sun-disc"></div>
@@ -65,23 +72,60 @@ function showLogin(message = '') {
       </aside>
     </main>`;
 
-  root.querySelector('#toggle-token-visibility').addEventListener('click', (event) => {
-    const input = root.querySelector('#admin-token');
+  root.querySelector('#toggle-password-visibility').addEventListener('click', (event) => {
+    const input = root.querySelector('#auth-password');
     const button = event.currentTarget;
     const reveal = input.type === 'password';
     input.type = reveal ? 'text' : 'password';
     button.textContent = reveal ? 'Hide' : 'Show';
     button.setAttribute('aria-pressed', String(reveal));
-    button.setAttribute('aria-label', `${reveal ? 'Hide' : 'Show'} dashboard token`);
+    button.setAttribute('aria-label', `${reveal ? 'Hide' : 'Show'} password`);
   });
 
-  root.querySelector('#login-form').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    state.token = new FormData(event.currentTarget).get('token').trim();
-    if (!state.token) return;
-    state.error = '';
-    await loadDashboard(true);
+  root.querySelector('#toggle-auth-mode').addEventListener('click', () => {
+    state.authMode = creatingAccount ? 'sign-in' : 'sign-up';
+    showLogin();
   });
+  root.querySelector('#open-public-voice-demo').addEventListener('click', showPublicVoiceDemo);
+  root.querySelector('#auth-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const email = String(formData.get('email') || '').trim();
+    const password = String(formData.get('password') || '');
+    const submit = event.currentTarget.querySelector('[type="submit"]');
+    submit.disabled = true;
+    submit.textContent = creatingAccount ? 'Creating account…' : 'Signing in…';
+    try {
+      const result = creatingAccount
+        ? await supabase.auth.signUp({ email, password })
+        : await supabase.auth.signInWithPassword({ email, password });
+      if (result.error) throw result.error;
+      if (creatingAccount && !result.data.session) {
+        state.authMode = 'sign-in';
+        showLogin('Check your email for the Supabase confirmation link, then sign in.');
+        return;
+      }
+      state.session = result.data.session;
+      await loadDashboard(true);
+    } catch (error) {
+      showLogin(error.message || 'Sign-in failed. Check your email and password and try again.');
+    }
+  });
+}
+
+function showPublicVoiceDemo() {
+  root.innerHTML = `
+    <main class="public-voice-wrap">
+      <section class="public-voice-card">
+        <button id="back-to-login" class="text-link" type="button">← Back to sign in</button>
+        <p class="eyebrow">BIZPOA AI VOICE DEMO</p>
+        <h1>Talk to Bizpoa.</h1>
+        <p class="public-voice-copy">Start a live browser voice conversation with Bizpoa’s AI assistant. It can discuss a sale or expense, but this demo is not connected to business records and will not save transactions.</p>
+        <div class="public-voice-widget"><elevenlabs-convai agent-id="${BIZPOA_VOICE_AGENT_ID}" variant="expanded" start-call-text="Start voice conversation" end-call-text="End conversation" action-text="Talk to Bizpoa"></elevenlabs-convai></div>
+        <p class="voice-note">Allow microphone access when prompted. This is a website voice conversation, not a telephone call. The assistant will identify itself as AI.</p>
+      </section>
+    </main>`;
+  root.querySelector('#back-to-login').addEventListener('click', () => showLogin());
 }
 
 const views = [
@@ -89,6 +133,7 @@ const views = [
   { id: 'businesses', label: 'Businesses', mark: 'B' },
   { id: 'transactions', label: 'Transactions', mark: 'T' },
   { id: 'sms', label: 'SMS details', mark: 'S' },
+  { id: 'voice', label: 'AI Call', mark: 'C' },
 ];
 
 function shell() {
@@ -103,7 +148,7 @@ function shell() {
         </nav>
         <div class="sidebar-spacer"></div>
         <div class="sidebar-help"><span class="help-dot"></span><div><strong>USSD connected</strong><small>Records sync from your backend</small></div></div>
-        <div class="sidebar-user"><div class="avatar">BP</div><div><strong>Bizpoa admin</strong><small>Local workspace</small></div><button id="sign-out" class="icon-button" aria-label="Sign out" title="Sign out">↗</button></div>
+        <div class="sidebar-user"><div class="avatar">BP</div><div><strong>Bizpoa admin</strong><small>${escapeHtml(state.session?.user?.email || 'Signed in')}</small></div><button id="sign-out" class="icon-button" aria-label="Sign out" title="Sign out">↗</button></div>
       </aside>
       <main class="main-content">
         <header class="topbar">
@@ -118,9 +163,9 @@ function shell() {
     </div>`;
 
   root.querySelector('#refresh').addEventListener('click', () => loadDashboard());
-  root.querySelector('#sign-out').addEventListener('click', () => {
-    sessionStorage.removeItem(tokenKey);
-    state.token = '';
+  root.querySelector('#sign-out').addEventListener('click', async () => {
+    await supabase.auth.signOut();
+    state.session = null;
     state.data = null;
     showLogin();
   });
@@ -133,6 +178,7 @@ function headingCopy(view) {
     businesses: 'Every business profile registered through the USSD service.',
     transactions: 'Sales and expenses recorded by business owners.',
     sms: 'Extra business information sent by SMS.',
+    voice: 'Start a live voice conversation with the Bizpoa AI assistant.',
   }[view];
 }
 
@@ -141,7 +187,20 @@ function renderView() {
   if (state.view === 'businesses') return renderBusinesses();
   if (state.view === 'transactions') return renderTransactions();
   if (state.view === 'sms') return renderSmsNotes();
+  if (state.view === 'voice') return renderVoiceCallView();
   return renderOverview();
+}
+
+function renderVoiceCallView() {
+  return `
+    <section class="panel voice-call-panel" aria-labelledby="voice-call-title">
+      <div class="voice-call-intro">
+        <div><p class="eyebrow">LIVE BROWSER VOICE CONVERSATION</p><h2 id="voice-call-title">Talk to your Bizpoa AI agent</h2><p>Tap the widget to begin, allow microphone access, and speak naturally. The assistant identifies itself as AI and can discuss a sale or expense.</p></div>
+        <span class="voice-demo-badge">Test mode</span>
+      </div>
+      <div class="voice-call-widget"><elevenlabs-convai agent-id="${BIZPOA_VOICE_AGENT_ID}" variant="expanded" start-call-text="Start voice conversation" end-call-text="End conversation" action-text="Talk to Bizpoa"></elevenlabs-convai></div>
+      <div class="voice-call-note"><strong>Important:</strong> This browser conversation is not connected to Bizpoa records and cannot save transactions. It does not call a phone number. Outbound/inbound telephone calls require a Twilio or SIP phone number to be connected to ElevenLabs.</div>
+    </section>`;
 }
 
 function renderOverview() {
@@ -299,7 +358,7 @@ async function reviewVoiceCommand() {
   try {
     const response = await fetch('/api/voice/review', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+      headers: authHeaders(true),
       body: JSON.stringify({ command: state.voiceCommand, businessCode: state.selectedBusinessCode }),
     });
     const payload = await response.json();
@@ -338,7 +397,7 @@ async function saveVoiceTransaction() {
   try {
     const response = await fetch('/api/voice/record', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${state.token}`, 'Content-Type': 'application/json' },
+      headers: authHeaders(true),
       body: JSON.stringify(state.pendingVoice),
     });
     const payload = await response.json();
@@ -411,20 +470,30 @@ function emptyState(title, description) {
   return `<div class="empty-state"><span class="empty-mark">—</span><strong>${escapeHtml(title)}</strong><p>${escapeHtml(description)}</p></div>`;
 }
 
+function authHeaders(json = false) {
+  return {
+    ...(state.session?.access_token ? { Authorization: `Bearer ${state.session.access_token}` } : {}),
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+  };
+}
+
 async function loadDashboard(fromLogin = false) {
   state.loading = true;
   state.error = '';
-  if (!state.data) showLogin(); else shell();
+  if (state.data) shell();
   try {
     const response = await fetch('/api/dashboard', {
-      headers: { Authorization: `Bearer ${state.token}` },
+      headers: authHeaders(),
       cache: 'no-store',
     });
     const payload = await response.json();
     if (!response.ok) {
-      if (response.status === 401 && fromLogin) {
-        state.token = '';
-        showLogin(payload.error || 'Token was not accepted.');
+      if (response.status === 401 || response.status === 403) {
+        const message = payload.error || 'This account is not authorized for the Bizpoa dashboard.';
+        await supabase.auth.signOut();
+        state.session = null;
+        state.data = null;
+        showLogin(message);
       } else if (response.status === 503) {
         state.error = payload.error || 'Dashboard is not configured.';
         if (state.data) shell(); else showLogin(state.error);
@@ -435,7 +504,6 @@ async function loadDashboard(fromLogin = false) {
       return;
     }
     state.data = payload;
-    sessionStorage.setItem(tokenKey, state.token);
     shell();
   } catch {
     state.error = 'Cannot reach the backend. Start it with npm run dev:backend and try again.';
@@ -453,5 +521,20 @@ root.addEventListener('click', (event) => {
   }
 });
 
-if (state.token) loadDashboard();
-else showLogin();
+supabase.auth.onAuthStateChange((event, session) => {
+  state.session = session;
+  if (event === 'SIGNED_OUT') {
+    state.data = null;
+    showLogin();
+  }
+});
+
+supabase.auth.getSession().then(({ data, error }) => {
+  if (error) {
+    showLogin('Could not restore your Supabase session. Please sign in again.');
+    return;
+  }
+  state.session = data.session;
+  if (state.session) loadDashboard();
+  else showLogin();
+});
