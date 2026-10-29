@@ -18,6 +18,15 @@ const state = {
   voiceReviewing: false,
   voiceError: '',
   voiceSuccess: '',
+  ownerAccessToken: sessionStorage.getItem('bizpoa-owner-token') || '',
+  ownerOtpSent: false,
+  ownerBusinessCode: '',
+  ownerPhoneNumber: '',
+  ownerError: '',
+  ownerData: null,
+  ownerDays: 30,
+  ownerBusy: false,
+  ownerStatus: '',
 };
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({
@@ -62,6 +71,7 @@ function showLogin(message = '') {
         </form>
         <p class="login-error" role="alert">${escapeHtml(message)}</p>
         <button id="toggle-auth-mode" class="text-link auth-mode-toggle" type="button">${creatingAccount ? 'Already have an account? Sign in' : 'Need an account? Create one'}</button>
+        <button id="open-owner-dashboard" class="text-link owner-entry-link" type="button">Business owner? Open your dashboard</button>
         <button id="open-public-voice-demo" class="button button-outline login-voice-demo" type="button">Try the AI voice demo <span aria-hidden="true">↗</span></button>
         <p class="login-footnote">Only the admin email configured for this Bizpoa backend can open the dashboard. Never share your password.</p>
       </section>
@@ -85,6 +95,11 @@ function showLogin(message = '') {
   root.querySelector('#toggle-auth-mode').addEventListener('click', () => {
     state.authMode = creatingAccount ? 'sign-in' : 'sign-up';
     showLogin();
+  });
+  root.querySelector('#open-owner-dashboard').addEventListener('click', () => {
+    state.ownerOtpSent = false;
+    state.ownerError = '';
+    showBusinessLogin();
   });
   root.querySelector('#open-public-voice-demo').addEventListener('click', showPublicVoiceDemo);
   root.querySelector('#auth-form').addEventListener('submit', async (event) => {
@@ -111,6 +126,218 @@ function showLogin(message = '') {
       showLogin(error.message || 'Sign-in failed. Check your email and password and try again.');
     }
   });
+}
+
+function showBusinessLogin(message = '') {
+  root.innerHTML = `
+    <main class="login-wrap owner-login-wrap">
+      <section class="login-card">
+        <div class="brand-mark">B<span>.</span></div>
+        <p class="eyebrow">BIZPOA BUSINESS OWNER</p>
+        <h1>Your business,<br><em>your numbers.</em></h1>
+        <p class="login-copy">Enter your Bizpoa ID and the phone number used to register. We’ll text a one-time code to that number before opening the dashboard.</p>
+        <form id="owner-login-form" class="login-form">
+          <label for="owner-business-code">Bizpoa business ID</label>
+          <input id="owner-business-code" name="businessCode" value="${escapeHtml(state.ownerBusinessCode)}" placeholder="BZ-ABC123" autocomplete="off" pattern="BZ-[A-Za-z0-9]{6}" required />
+          <label for="owner-phone-number">Registered phone number</label>
+          <input id="owner-phone-number" name="phoneNumber" type="tel" value="${escapeHtml(state.ownerPhoneNumber)}" placeholder="+254 7XX XXX XXX" autocomplete="tel" required />
+          ${state.ownerOtpSent ? `<label for="owner-verification-code">SMS verification code</label><input id="owner-verification-code" name="verificationCode" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="6-digit code" required />` : ''}
+          <button class="button button-primary" type="submit" ${state.ownerBusy ? 'disabled' : ''}>${state.ownerBusy ? 'Please wait…' : state.ownerOtpSent ? 'Verify and open dashboard' : 'Text me a verification code'} <span aria-hidden="true">→</span></button>
+        </form>
+        <p class="login-error" role="alert">${escapeHtml(message || state.ownerError)}</p>
+        ${state.ownerOtpSent ? '<button id="reset-owner-login" class="text-link" type="button">Use different details</button>' : ''}
+        <button id="back-to-admin-login" class="text-link owner-entry-link" type="button">← Back to admin sign in</button>
+        <p class="login-footnote">Your dashboard is limited to your own business and its records. Never share your verification code.</p>
+      </section>
+      <aside class="login-aside"><div class="sun-disc"></div><div class="aside-caption"><span>01 / YOUR BUSINESS</span><p>Simple records.<br />Better decisions.</p></div><div class="aside-lines"><i></i><i></i><i></i><i></i><i></i></div></aside>
+    </main>`;
+
+  root.querySelector('#back-to-admin-login').addEventListener('click', () => showLogin());
+  root.querySelector('#reset-owner-login')?.addEventListener('click', () => {
+    state.ownerOtpSent = false;
+    state.ownerError = '';
+    showBusinessLogin();
+  });
+  root.querySelector('#owner-login-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    state.ownerBusinessCode = String(formData.get('businessCode') || '').trim().toUpperCase();
+    state.ownerPhoneNumber = String(formData.get('phoneNumber') || '').trim();
+    state.ownerBusy = true;
+    state.ownerError = '';
+    showBusinessLogin();
+    try {
+      if (!state.ownerOtpSent) {
+        const response = await fetch('/api/business-auth/request-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ businessCode: state.ownerBusinessCode, phoneNumber: state.ownerPhoneNumber }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || 'Could not request a verification code.');
+        state.ownerOtpSent = true;
+        state.ownerBusy = false;
+        showBusinessLogin(payload.message || 'If those details match a registered business, a verification code has been sent.');
+        return;
+      }
+
+      const verificationCode = String(formData.get('verificationCode') || '').trim();
+      const response = await fetch('/api/business-auth/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessCode: state.ownerBusinessCode, phoneNumber: state.ownerPhoneNumber, code: verificationCode }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'The code is invalid or expired. Request a new one.');
+      state.ownerAccessToken = payload.accessToken;
+      sessionStorage.setItem('bizpoa-owner-token', payload.accessToken);
+      state.ownerOtpSent = false;
+      state.ownerBusy = false;
+      await loadBusinessDashboard();
+    } catch (error) {
+      state.ownerBusy = false;
+      state.ownerError = ({
+        owner_login_not_configured: 'Business-owner sign-in is not configured on the Bizpoa backend yet.',
+        too_many_code_requests: 'Please wait at least one minute before requesting another code. Daily limits also apply.',
+        verification_sms_not_sent: 'Bizpoa could not send the code. Check the Africa’s Talking SMS settings and try again shortly.',
+        invalid_business_details: 'Enter a valid Bizpoa ID and the phone number used when registering the business.',
+        invalid_or_expired_code: 'That code is incorrect or expired. Use different details to request a new code.',
+      })[error.message] || error.message || 'Could not verify your business. Try again.';
+      showBusinessLogin();
+    }
+  });
+}
+
+function ownerAuthHeaders(json = false) {
+  return {
+    ...(state.ownerAccessToken ? { Authorization: `Bearer ${state.ownerAccessToken}` } : {}),
+    ...(json ? { 'Content-Type': 'application/json' } : {}),
+  };
+}
+
+async function loadBusinessDashboard() {
+  state.ownerBusy = true;
+  state.ownerStatus = '';
+  try {
+    const response = await fetch(`/api/business/dashboard?days=${encodeURIComponent(state.ownerDays)}`, {
+      headers: ownerAuthHeaders(),
+      cache: 'no-store',
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 404) {
+        sessionStorage.removeItem('bizpoa-owner-token');
+        state.ownerAccessToken = '';
+        state.ownerData = null;
+        state.ownerOtpSent = false;
+        showBusinessLogin('Your business session expired. Sign in again with your Bizpoa ID and registered phone.');
+        return;
+      }
+      throw new Error(payload.error || 'Could not load the business dashboard.');
+    }
+    state.ownerData = payload;
+  } catch (error) {
+    state.ownerStatus = error.message || 'Could not load the business dashboard.';
+  } finally {
+    state.ownerBusy = false;
+    if (state.ownerAccessToken) showBusinessDashboard();
+  }
+}
+
+function showBusinessDashboard() {
+  const data = state.ownerData;
+  if (!data) {
+    root.innerHTML = `<main class="owner-app"><div class="owner-loading"><span class="brand-mark">B<span>.</span></span><p>${state.ownerBusy ? 'Loading your Bizpoa dashboard…' : escapeHtml(state.ownerStatus || 'No dashboard data is available.')}</p><button id="owner-sign-out" class="button button-light" type="button">Sign out</button></div></main>`;
+    root.querySelector('#owner-sign-out')?.addEventListener('click', signOutBusinessOwner);
+    return;
+  }
+  const { business, summary, transactions, smsNotes } = data;
+  root.innerHTML = `
+    <div class="owner-app">
+      <header class="owner-header">
+        <a class="wordmark" href="#owner" aria-label="Bizpoa owner dashboard"><span class="brand-mark small">B<span>.</span></span><span>bizpoa</span></a>
+        <div class="owner-header-actions"><span class="owner-secure-label">Private business dashboard</span><button id="owner-refresh" class="button button-light" type="button" ${state.ownerBusy ? 'disabled' : ''}>↻ Refresh</button><button id="owner-sign-out" class="icon-button" type="button" aria-label="Sign out" title="Sign out">Sign out</button></div>
+      </header>
+      <main class="owner-content">
+        <section class="page-heading owner-heading"><div><p class="eyebrow">BIZPOA BUSINESS DASHBOARD</p><h1>${escapeHtml(business.name)}</h1><p>${escapeHtml(business.type || 'Registered business')} · Bizpoa ID <strong>${escapeHtml(business.code)}</strong></p></div><span class="period-chip"><i></i> ${dateLabel(summary.periodStart)} – ${dateLabel(summary.periodEnd)}</span></section>
+        ${state.ownerStatus ? `<div class="notice" role="status">${escapeHtml(state.ownerStatus)}</div>` : ''}
+        <section class="owner-controls panel"><label for="owner-days">Audit period (days)<input id="owner-days" type="number" min="1" max="365" value="${escapeHtml(state.ownerDays)}" /></label><button id="apply-owner-days" class="button button-light" type="button">Update period</button><span class="owner-control-spacer"></span><button id="owner-download-csv" class="button button-outline" type="button">Download CSV ledger</button><button id="owner-send-statement" class="button button-primary" type="button">Send summary by SMS</button></section>
+        <div class="stat-grid">
+          ${statCard('Sales', `KES ${money(summary.sales)}`, `${summary.transactionCount} entries in ${summary.days} days`, '01', 'green')}
+          ${statCard('Expenses', `KES ${money(summary.expenses)}`, 'For the selected period', '02', 'rose')}
+          ${statCard('Net', `KES ${money(summary.net)}`, 'Sales less expenses', '03', 'dark')}
+          ${statCard('SMS details', smsNotes.length, 'Business notes and AI summaries', '04', 'cream')}
+        </div>
+        <section class="panel full-panel owner-ledger-panel"><div class="panel-heading"><div><p class="eyebrow">YOUR RECORDS</p><h2>Sales and expenses</h2></div><span class="panel-note">${transactions.length} shown</span></div>
+          ${transactions.length ? `<div class="table-scroll"><table><thead><tr><th>Date</th><th>Type</th><th>Reference</th><th class="amount-col">Amount (KES)</th></tr></thead><tbody>${transactions.map((transaction) => `<tr><td>${dateLabel(transaction.createdAt || transaction.date)}</td><td><span class="type-chip ${transaction.type === 'sale' ? 'chip-sale' : 'chip-expense'}">${transaction.type === 'sale' ? 'Sale' : 'Expense'}</span></td><td class="mono">${escapeHtml(transaction.id || '—')}</td><td class="amount-col ${transaction.type === 'sale' ? 'positive' : 'negative'}">${transaction.type === 'sale' ? '+' : '−'} ${money(transaction.amount)}</td></tr>`).join('')}</tbody></table></div>` : emptyState('No records in this period', 'Record sales and expenses using Bizpoa USSD after entering your business ID.')}
+        </section>
+        <section class="panel full-panel owner-notes-panel"><div class="panel-heading"><div><p class="eyebrow">BIZPOA TEXT ASSISTANT</p><h2>Messages and summaries</h2></div><span class="panel-note">Latest ${smsNotes.length}</span></div>
+          ${smsNotes.length ? `<div class="notes-list">${smsNotes.map((note) => `<article class="note-card"><div class="note-head"><strong>${dateLabel(note.receivedAt)}</strong><span class="note-code">${escapeHtml(note.aiTopic || 'Message')}</span></div><p>${escapeHtml(note.text)}</p>${note.aiSummary ? `<p class="ai-summary"><strong>Bizpoa summary:</strong> ${escapeHtml(note.aiSummary)}</p>` : ''}</article>`).join('')}</div>` : emptyState('No messages yet', 'Text your business details or questions to Bizpoa at 62073 from your registered phone.')}
+        </section>
+        <footer class="page-footer"><span>Bizpoa</span><span>Your records are private to this registered business.</span></footer>
+      </main>
+    </div>`;
+
+  root.querySelector('#owner-refresh').addEventListener('click', loadBusinessDashboard);
+  root.querySelector('#owner-sign-out').addEventListener('click', signOutBusinessOwner);
+  root.querySelector('#apply-owner-days').addEventListener('click', () => {
+    const days = Number(root.querySelector('#owner-days').value);
+    if (!Number.isInteger(days) || days < 1 || days > 365) {
+      state.ownerStatus = 'Choose a whole number from 1 to 365 days.';
+      showBusinessDashboard();
+      return;
+    }
+    state.ownerDays = days;
+    loadBusinessDashboard();
+  });
+  root.querySelector('#owner-download-csv').addEventListener('click', downloadOwnerStatement);
+  root.querySelector('#owner-send-statement').addEventListener('click', sendOwnerStatement);
+}
+
+async function downloadOwnerStatement() {
+  try {
+    const response = await fetch(`/api/business/statement.csv?days=${encodeURIComponent(state.ownerDays)}`, {
+      headers: ownerAuthHeaders(),
+      cache: 'no-store',
+    });
+    if (!response.ok) throw new Error('Could not download your ledger. Please refresh and try again.');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `bizpoa-${state.ownerData.business.code}-${state.ownerDays}-day-ledger.csv`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    state.ownerStatus = error.message || 'Could not download your ledger.';
+    showBusinessDashboard();
+  }
+}
+
+async function sendOwnerStatement() {
+  try {
+    const response = await fetch('/api/business/statement-sms', {
+      method: 'POST',
+      headers: ownerAuthHeaders(true),
+      body: JSON.stringify({ days: state.ownerDays }),
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error === 'statement_sms_not_sent' ? 'SMS delivery failed. Check the Bizpoa SMS gateway settings.' : 'Could not send the statement SMS.');
+    state.ownerStatus = payload.message || 'Statement summary sent by SMS.';
+    showBusinessDashboard();
+  } catch (error) {
+    state.ownerStatus = error.message || 'Could not send the statement SMS.';
+    showBusinessDashboard();
+  }
+}
+
+function signOutBusinessOwner() {
+  sessionStorage.removeItem('bizpoa-owner-token');
+  state.ownerAccessToken = '';
+  state.ownerData = null;
+  state.ownerOtpSent = false;
+  state.ownerStatus = '';
+  showBusinessLogin();
 }
 
 function showPublicVoiceDemo() {
@@ -462,7 +689,7 @@ function renderTransactions() {
 function renderSmsNotes() {
   const notes = state.data.smsNotes;
   return `<section class="panel full-panel"><div class="panel-heading"><div><p class="eyebrow">OWNER MESSAGES</p><h2>Details received by SMS</h2></div><span class="panel-note">Latest ${notes.length}</span></div>
-    ${notes.length ? `<div class="notes-list">${notes.map((note) => { const business = state.data.businesses.find((item) => item.code === note.businessCode); return `<article class="note-card"><div class="note-head"><div><span class="note-code">${escapeHtml(note.businessCode || 'UNLINKED')}</span><strong>${escapeHtml(business?.name || 'Unmatched detail')}</strong></div><time>${dateLabel(note.receivedAt)}</time></div><p>${escapeHtml(note.text)}</p></article>`; }).join('')}</div>` : emptyState('No SMS details yet', 'After registration, owners can text their Bizpoa ID followed by details to your Africa’s Talking SMS shortcode.')}
+    ${notes.length ? `<div class="notes-list">${notes.map((note) => { const business = state.data.businesses.find((item) => item.code === note.businessCode); return `<article class="note-card"><div class="note-head"><div><span class="note-code">${escapeHtml(note.businessCode || 'UNLINKED')}</span><strong>${escapeHtml(business?.name || 'Unmatched detail')}</strong></div><time>${dateLabel(note.receivedAt)}</time></div><p>${escapeHtml(note.text)}</p>${note.aiSummary ? `<p class="ai-summary"><strong>AI summary:</strong> ${escapeHtml(note.aiSummary)}</p>` : ''}${note.aiReply ? `<p><strong>AI reply:</strong> ${escapeHtml(note.aiReply)}</p>` : ''}</article>`; }).join('')}</div>` : emptyState('No SMS details yet', 'Owners can send business details or questions to Bizpoa at 62073 from their registered phone.')}
   </section>`;
 }
 
@@ -521,7 +748,15 @@ root.addEventListener('click', (event) => {
   }
 });
 
+window.addEventListener('hashchange', () => {
+  if (window.location.hash === '#overview' && state.session && state.data) {
+    state.view = 'overview';
+    shell();
+  }
+});
+
 supabase.auth.onAuthStateChange((event, session) => {
+  if (state.ownerAccessToken) return;
   state.session = session;
   if (event === 'SIGNED_OUT') {
     state.data = null;
@@ -529,12 +764,17 @@ supabase.auth.onAuthStateChange((event, session) => {
   }
 });
 
-supabase.auth.getSession().then(({ data, error }) => {
-  if (error) {
-    showLogin('Could not restore your Supabase session. Please sign in again.');
-    return;
-  }
-  state.session = data.session;
-  if (state.session) loadDashboard();
-  else showLogin();
-});
+if (state.ownerAccessToken) {
+  loadBusinessDashboard();
+} else {
+  supabase.auth.getSession().then(({ data, error }) => {
+    if (state.ownerAccessToken) return;
+    if (error) {
+      showLogin('Could not restore your Supabase session. Please sign in again.');
+      return;
+    }
+    state.session = data.session;
+    if (state.session) loadDashboard();
+    else showLogin();
+  });
+}

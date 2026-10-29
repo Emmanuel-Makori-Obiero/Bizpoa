@@ -38,6 +38,8 @@ test('SMS sender does not call Africa\'s Talking if no API key is configured', a
 });
 
 test('registration and receipt SMS include the business ID and instructions', () => {
-  assert.match(registrationSms('BZ-ABC123'), /BZ-ABC123, followed by your details/);
+  assert.match(registrationSms('BZ-ABC123'), /BZ-ABC123, followed by your message, to 62073/);
+  assert.match(registrationSms('BZ-ABC123'), /Use your registered phone/);
   assert.match(detailsSavedSms('BZ-ABC123'), /Details received for BZ-ABC123/);
+  assert.match(detailsSavedSms('BZ-ABC123'), /62073/);
 });

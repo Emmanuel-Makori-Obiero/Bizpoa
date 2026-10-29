@@ -1,4 +1,5 @@
 import { randomInt } from 'node:crypto';
+import { createStatementDownloadUrl, formatStatementSms, statementLinkConfigured } from './statements.js';
 
 const languageChoices = {
   en: 'Choose language / Chagua lugha\n1. English\n2. Kiswahili',
@@ -39,8 +40,17 @@ const categoryKeys = { '1': 'retail', '2': 'beauty', '3': 'food', '4': 'other' }
 
 const copy = {
   en: {
-    menu: (code) => `Bizpoa${code ? ` (${code})` : ''}\n1. Register business\n2. Get today's audit\n3. Manage business\n4. Get 7-day audit\n5. Change language`,
-    manageMenu: 'Manage business\n1. Record sale\n2. Record expense\n3. Back to main menu',
+    menu: (code) => `Bizpoa${code ? ` (${code})` : ''}\n1. Register business\n2. Manage business\n3. Audit / statement\n4. Change language\n00. Home  0. Back`,
+    manageIdPrompt: 'Bizpoa secure access\nEnter your Bizpoa business ID to continue:',
+    manageMenu: (code) => `Bizpoa · ${code}\n1. Record sale\n2. Record expense\n0. Back  00. Home`,
+    auditDaysPrompt: 'Bizpoa statement\nEnter the number of days to audit (1-365):\n0. Back  00. Home',
+    auditDeliveryPrompt: (documentAvailable) => `Bizpoa statement · ${documentAvailable ? '1. Send summary by SMS\n2. Send CSV ledger link by SMS' : '1. Send summary by SMS\nCSV document delivery unavailable'}\n0. Back  00. Home`,
+    invalidDays: 'Enter a whole number from 1 to 365 days.',
+    invalidBusinessId: 'That Bizpoa ID does not match this registered phone. Enter the ID again or press 0 to go back.',
+    statementSending: 'Bizpoa: Your statement summary is being sent to this phone by SMS.',
+    documentSending: 'Bizpoa: Your CSV ledger link is being sent by SMS. The private link expires in 24 hours.',
+    documentUnavailable: 'CSV document delivery is not configured yet. Choose SMS summary or press 0 to go back.',
+    smsDetails: (code) => `Bizpoa: To share business details, SMS ${code} followed by your message to 62073. Example: ${code}, near the market; opens at 7am. Use your registered phone.`,
     categoryPrompt: 'Choose business category:',
     typePrompt: (category, types) => `Choose business type (${category}):\n${types.map((type, i) => `${i + 1}. ${type}`).join('\n')}`,
     namePrompt: 'Enter your business name (letters/numbers, max 40 characters):',
@@ -56,13 +66,22 @@ const copy = {
     saleSaved: (amount) => `Sale recorded: ${amount}. Thank you.`,
     expenseSaved: (amount) => `Expense recorded: ${amount}. Thank you.`,
     audit: (period, sales, expenses) => `${period}\nSales: ${sales}\nExpenses: ${expenses}\nNet: ${formatAmount(sales - expenses)}`,
-    smsDetails: 'You can text extra business details to this number after registration.',
     noBusiness: 'Register your business first to use this option.',
     languageInvalid: 'Invalid choice. Choose 1 for English or 2 for Kiswahili.',
+    backToHome: 'Returned to the Bizpoa home menu.',
   },
   sw: {
-    menu: (code) => `Bizpoa${code ? ` (${code})` : ''}\n1. Sajili biashara\n2. Ukaguzi wa leo\n3. Simamia biashara\n4. Ukaguzi wa siku 7\n5. Badili lugha`,
-    manageMenu: 'Simamia biashara\n1. Rekodi mauzo\n2. Rekodi matumizi\n3. Rudi kwenye menyu kuu',
+    menu: (code) => `Bizpoa${code ? ` (${code})` : ''}\n1. Sajili biashara\n2. Simamia biashara\n3. Taarifa / hesabu\n4. Badili lugha\n00. Mwanzo  0. Rudi`,
+    manageIdPrompt: 'Bizpoa: ufikiaji salama\nWeka nambari ya biashara ya Bizpoa kuendelea:',
+    manageMenu: (code) => `Bizpoa · ${code}\n1. Rekodi mauzo\n2. Rekodi matumizi\n0. Rudi  00. Mwanzo`,
+    auditDaysPrompt: 'Taarifa ya Bizpoa\nWeka idadi ya siku za kukagua (1-365):\n0. Rudi  00. Mwanzo',
+    auditDeliveryPrompt: (documentAvailable) => `Taarifa ya Bizpoa · ${documentAvailable ? '1. Tuma muhtasari kwa SMS\n2. Tuma kiungo cha CSV kwa SMS' : '1. Tuma muhtasari kwa SMS\nKutuma hati ya CSV hakupatikani'}\n0. Rudi  00. Mwanzo`,
+    invalidDays: 'Weka nambari kamili kati ya siku 1 na 365.',
+    invalidBusinessId: 'Nambari hiyo ya Bizpoa haiendani na simu hii iliyosajiliwa. Weka tena au bonyeza 0 kurudi.',
+    statementSending: 'Bizpoa: Muhtasari wa taarifa unatumiwa kwa SMS kwenye simu hii.',
+    documentSending: 'Bizpoa: Kiungo cha CSV kinatumwa kwa SMS. Kiungo binafsi kinaisha baada ya saa 24.',
+    documentUnavailable: 'Kutuma hati ya CSV hakujasanidiwa. Chagua muhtasari wa SMS au bonyeza 0 kurudi.',
+    smsDetails: (code) => `Bizpoa: Kutuma maelezo ya biashara, SMS ${code} ikifuatiwa na ujumbe wako kwenda 62073. Mfano: ${code}, karibu na soko; hufungua saa 1 asubuhi. Tumia simu iliyosajiliwa.`,
     categoryPrompt: 'Chagua aina ya biashara:',
     typePrompt: (category, types) => `Chagua biashara (${category}):\n${types.map((type, i) => `${i + 1}. ${type}`).join('\n')}`,
     namePrompt: 'Weka jina la biashara yako (herufi/nambari, herufi 40 upeo):',
@@ -78,14 +97,15 @@ const copy = {
     saleSaved: (amount) => `Mauzo ya ${amount} yamerekodiwa. Asante.`,
     expenseSaved: (amount) => `Matumizi ya ${amount} yamerekodiwa. Asante.`,
     audit: (period, sales, expenses) => `${period}\nMauzo: ${sales}\nMatumizi: ${expenses}\nFaida halisi: ${formatAmount(sales - expenses)}`,
-    smsDetails: 'Baada ya kusajili biashara, unaweza kutuma maelezo zaidi kwa SMS kwa nambari hii.',
     noBusiness: 'Sajili biashara yako kwanza kutumia chaguo hili.',
     languageInvalid: 'Chaguo si sahihi. Chagua 1 kwa Kiingereza au 2 kwa Kiswahili.',
+    backToHome: 'Umerudi kwenye menyu kuu ya Bizpoa.',
   },
 };
 
-const con = (message) => `CON ${message}`;
-const end = (message) => `END ${message}`;
+const brandMessage = (message) => String(message).startsWith('Bizpoa') ? String(message) : `Bizpoa\n${message}`;
+const con = (message) => `CON ${brandMessage(message)}`;
+const end = (message) => `END ${brandMessage(message)}`;
 const languageFromChoice = (choice) => (choice === '1' ? 'en' : choice === '2' ? 'sw' : null);
 
 function categoryLabel(language, key) {
@@ -105,9 +125,12 @@ function promptForStage(session) {
     return con(messages.typePrompt(categoryLabel(session.language, session.category), types));
   }
   if (session.stage === 'businessName') return con(messages.namePrompt);
+  if (session.stage === 'manageId') return con(messages.manageIdPrompt);
   if (session.stage === 'saleAmount') return con(messages.saleAmount);
   if (session.stage === 'expenseAmount') return con(messages.expenseAmount);
-  if (session.stage === 'manage') return con(messages.manageMenu);
+  if (session.stage === 'auditDays') return con(messages.auditDaysPrompt);
+  if (session.stage === 'auditDelivery') return con(messages.auditDeliveryPrompt(Boolean(session.documentAvailable)));
+  if (session.stage === 'manage') return con(messages.manageMenu(session.business ?? ''));
   const business = session.business ?? '';
   return con(messages.menu(business));
 }
@@ -150,7 +173,7 @@ function auditSummary(database, phoneNumber, language, days) {
   const messages = copy[language];
   const period = days === 1
     ? (language === 'sw' ? 'Ukaguzi wa leo' : "Today's audit")
-    : (language === 'sw' ? 'Ukaguzi wa siku 7' : '7-day audit');
+    : (language === 'sw' ? `Ukaguzi wa siku ${days}` : `Audit for the last ${days} days`);
   return messages.audit(period, sales, expenses);
 }
 
@@ -167,16 +190,18 @@ function makeBusinessCode(database) {
   return code;
 }
 
-export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
-  if (!sessionId || !phoneNumber) return end('Invalid USSD request.');
+export async function handleUssdAction({ sessionId, phoneNumber, text = '' }, store, statementOptions = {}) {
+  if (!sessionId || !phoneNumber) return { response: end('Invalid USSD request.'), outboundSms: null };
 
-  return store.transact(async (database) => {
+  let outboundSms = null;
+  const response = await store.transact(async (database) => {
     database.businesses ??= {};
     database.smsNotes ??= [];
     const user = database.users[phoneNumber] ?? {};
     const savedLanguage = user.language;
     const existingBusiness = database.businesses[phoneNumber];
-    const session = database.sessions[sessionId] ?? {
+    const savedSession = database.sessions[sessionId];
+    const session = savedSession?.phoneNumber === phoneNumber ? savedSession : {
       phoneNumber,
       language: savedLanguage === 'sw' ? 'sw' : 'en',
       stage: savedLanguage ? 'main' : 'language',
@@ -191,6 +216,55 @@ export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
       session.consumed += 1;
       const messages = copy[session.language];
 
+      if (value === '00') {
+        const language = database.users[phoneNumber]?.language ?? session.language;
+        const consumed = session.consumed;
+        Object.assign(session, {
+          phoneNumber,
+          language,
+          stage: database.users[phoneNumber]?.language ? 'main' : 'language',
+          consumed,
+          business: existingBusiness?.code ?? null,
+        });
+        delete session.category;
+        delete session.businessType;
+        delete session.auditDays;
+        delete session.documentAvailable;
+        delete session.previousStage;
+        continue;
+      }
+
+      if (value === '0') {
+        const backStages = {
+          category: 'main',
+          businessType: 'category',
+          businessName: 'businessType',
+          manageId: 'main',
+          manage: 'main',
+          saleAmount: 'manage',
+          expenseAmount: 'manage',
+          auditDays: 'main',
+          auditDelivery: 'auditDays',
+        };
+        const previous = session.stage === 'language'
+          ? (session.previousStage ?? (savedLanguage ? 'main' : null))
+          : backStages[session.stage];
+        if (previous) {
+          session.stage = previous;
+          delete session.previousStage;
+          if (previous === 'main') {
+            delete session.category;
+            delete session.businessType;
+            delete session.auditDays;
+            session.business = existingBusiness?.code ?? null;
+          }
+          continue;
+        }
+        if (session.stage === 'main') continue;
+        database.sessions[sessionId] = session;
+        return promptForStage(session);
+      }
+
       if (session.stage === 'language') {
         const chosenLanguage = languageFromChoice(value);
         if (!chosenLanguage) {
@@ -199,6 +273,7 @@ export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
         }
         session.language = chosenLanguage;
         session.stage = 'main';
+        delete session.previousStage;
         database.users[phoneNumber] = { ...user, language: chosenLanguage, updatedAt: new Date().toISOString() };
         continue;
       }
@@ -213,26 +288,23 @@ export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
             delete database.sessions[sessionId];
             return end(messages.noBusiness);
           }
-          delete database.sessions[sessionId];
-          return end(auditSummary(database, phoneNumber, session.language, 1));
+          session.business = existingBusiness.code;
+          session.stage = 'manageId';
+          continue;
         }
         if (value === '3') {
           if (!existingBusiness) {
             delete database.sessions[sessionId];
             return end(messages.noBusiness);
           }
-          session.stage = 'manage';
+          session.business = existingBusiness.code;
+          session.auditDays = null;
+          session.documentAvailable = statementLinkConfigured(statementOptions);
+          session.stage = 'auditDays';
           continue;
         }
         if (value === '4') {
-          if (!existingBusiness) {
-            delete database.sessions[sessionId];
-            return end(messages.noBusiness);
-          }
-          delete database.sessions[sessionId];
-          return end(`${auditSummary(database, phoneNumber, session.language, 7)}\n${messages.smsDetails}`);
-        }
-        if (value === '5') {
+          session.previousStage = 'main';
           session.stage = 'language';
           continue;
         }
@@ -282,7 +354,67 @@ export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
         database.businesses[phoneNumber] = business;
         session.business = business.code;
         delete database.sessions[sessionId];
-        return end(`${messages.registered(business.name, business.type, business.code)}\n${messages.smsDetails}`);
+        return end(`${messages.registered(business.name, business.type, business.code)}\n${messages.smsDetails(business.code)}`);
+      }
+
+      if (session.stage === 'manageId') {
+        const submittedCode = value.toUpperCase();
+        if (!existingBusiness || existingBusiness.phoneNumber !== phoneNumber || submittedCode !== existingBusiness.code) {
+          database.sessions[sessionId] = session;
+          return con(`${messages.manageIdPrompt}\n${messages.invalidBusinessId}`);
+        }
+        session.business = existingBusiness.code;
+        session.stage = 'manage';
+        continue;
+      }
+
+      if (session.stage === 'auditDays') {
+        if (!/^\d{1,3}$/.test(value) || Number(value) < 1 || Number(value) > 365) {
+          database.sessions[sessionId] = session;
+          return con(`${messages.auditDaysPrompt}\n${messages.invalidDays}`);
+        }
+        session.auditDays = Number(value);
+        session.stage = 'auditDelivery';
+        continue;
+      }
+
+      if (session.stage === 'auditDelivery') {
+        const business = database.businesses[phoneNumber];
+        if (!business || business.code !== session.business) {
+          delete database.sessions[sessionId];
+          return end(messages.noBusiness);
+        }
+        if (value === '1') {
+          const message = formatStatementSms(database, business, session.auditDays, session.language);
+          if (!message) {
+            database.sessions[sessionId] = session;
+            return con(`${messages.auditDeliveryPrompt(Boolean(session.documentAvailable))}\n${messages.invalidMenu}`);
+          }
+          outboundSms = { to: phoneNumber, message };
+          delete database.sessions[sessionId];
+          return end(messages.statementSending);
+        }
+        if (value === '2') {
+          const url = createStatementDownloadUrl({
+            businessCode: business.code,
+            phoneNumber,
+            days: session.auditDays,
+            publicUrl: statementOptions.publicUrl,
+            secret: statementOptions.secret,
+          });
+          if (!url) {
+            database.sessions[sessionId] = session;
+            return con(`${messages.auditDeliveryPrompt(Boolean(session.documentAvailable))}\n${messages.documentUnavailable}`);
+          }
+          outboundSms = {
+            to: phoneNumber,
+            message: `Bizpoa: ${business.code} ledger for the last ${session.auditDays} days. Download the CSV (expires in 24 hours): ${url}`,
+          };
+          delete database.sessions[sessionId];
+          return end(messages.documentSending);
+        }
+        database.sessions[sessionId] = session;
+        return con(`${messages.auditDeliveryPrompt(Boolean(session.documentAvailable))}\n${messages.invalidMenu}`);
       }
 
       if (session.stage === 'manage') {
@@ -294,12 +426,8 @@ export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
           session.stage = 'expenseAmount';
           continue;
         }
-        if (value === '3') {
-          session.stage = 'main';
-          continue;
-        }
         database.sessions[sessionId] = session;
-        return con(`${messages.manageMenu}\n${messages.invalidMenu}`);
+        return con(`${messages.manageMenu(session.business ?? '')}\n${messages.invalidMenu}`);
       }
 
       if (session.stage === 'saleAmount' || session.stage === 'expenseAmount') {
@@ -310,6 +438,10 @@ export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
         const type = session.stage === 'saleAmount' ? 'sale' : 'expense';
         const amount = Number(value);
         const business = database.businesses[phoneNumber];
+        if (!business || business.code !== session.business) {
+          delete database.sessions[sessionId];
+          return end(messages.noBusiness);
+        }
         database.transactions.push({
           id: `${sessionId}-${session.consumed}`,
           phoneNumber,
@@ -327,6 +459,12 @@ export async function handleUssd({ sessionId, phoneNumber, text = '' }, store) {
     database.sessions[sessionId] = session;
     return promptForStage(session);
   });
+  return { response, outboundSms };
+}
+
+export async function handleUssd(request, store) {
+  const result = await handleUssdAction(request, store);
+  return result.response;
 }
 
 export async function saveSmsLanguage({ phoneNumber, text = '' }, store) {
@@ -345,13 +483,16 @@ export async function saveSmsLanguage({ phoneNumber, text = '' }, store) {
   return language;
 }
 
-export async function saveSmsBusinessDetail({ phoneNumber, text = '' }, store) {
+export async function saveSmsBusinessDetail({ phoneNumber, text = '' }, store, { analysis = null, messageId = null } = {}) {
   const incoming = text.trim();
   if (!phoneNumber || !incoming) return { saved: false, reason: 'empty_message' };
   if (incoming.length > 1000) return { saved: false, reason: 'message_too_long' };
 
   return store.transact((database) => {
     database.smsNotes ??= [];
+    if (messageId && database.smsNotes.some((note) => note.messageId === messageId)) {
+      return { saved: false, reason: 'duplicate_message' };
+    }
     const codeMatch = incoming.match(/^(BZ-[A-Z0-9]{6})(?:\s*[,;:]\s*|\s+)(.*)$/i);
     const startsWithCode = incoming.match(/^(BZ-[A-Z0-9]{6})\b/i);
     let business = database.businesses?.[phoneNumber] ?? null;
@@ -373,6 +514,12 @@ export async function saveSmsBusinessDetail({ phoneNumber, text = '' }, store) {
       phoneNumber,
       businessCode: business?.code ?? null,
       text: detail,
+      ...(messageId ? { messageId } : {}),
+      ...(analysis ? {
+        aiTopic: analysis.topic,
+        aiSummary: analysis.summary,
+        aiReply: analysis.reply,
+      } : {}),
       receivedAt: new Date().toISOString(),
     });
     return { saved: true, businessCode: business?.code ?? null };

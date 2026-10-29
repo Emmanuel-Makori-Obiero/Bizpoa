@@ -4,8 +4,11 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createStore } from './storage.js';
 import { createAdminAuthenticator } from './auth.js';
-import { handleUssd, saveSmsBusinessDetail, saveSmsLanguage } from './ussd.js';
-import { detailsSavedSms, registrationSms, sendSms } from './africastalking.js';
+import { handleUssdAction, saveSmsBusinessDetail, saveSmsLanguage } from './ussd.js';
+import { languageSavedSms, registrationSms, sendSms } from './africastalking.js';
+import { buildStatementCsv, formatStatementSms, statementWindow, verifyStatementDownloadToken } from './statements.js';
+import { analyzeBusinessSms, fallbackSmsReply } from './sms-ai.js';
+import { clearOwnerOtp, createOwnerOtp, verifyOwnerOtp, verifyOwnerSessionToken } from './business-auth.js';
 import { recordVoiceTransaction } from './voice.js';
 import { reviewVoiceCommand } from './voice-review.js';
 
@@ -91,11 +94,254 @@ function dashboardData(database) {
   };
 }
 
+function smsBusinessForSender(database, phoneNumber, text) {
+  const codeMatch = String(text ?? '').trim().match(/^(BZ-[A-Z0-9]{6})\b/i);
+  if (codeMatch) {
+    const business = Object.values(database.businesses ?? {}).find((item) => item.code === codeMatch[1].toUpperCase());
+    return business?.phoneNumber === phoneNumber ? business : null;
+  }
+  return database.businesses?.[phoneNumber] ?? null;
+}
+
+function businessDashboardData(database, identity, days) {
+  const business = Object.values(database.businesses ?? {}).find((item) =>
+    item.code === identity.businessCode && item.phoneNumber === identity.phoneNumber);
+  if (!business) return null;
+  const window = statementWindow(days);
+  if (!window) return null;
+  const transactions = (database.transactions ?? []).filter((transaction) => {
+    const belongs = transaction.businessCode === business.code
+      || (!transaction.businessCode && transaction.phoneNumber === business.phoneNumber);
+    return belongs && transaction.date >= window.start && transaction.date <= window.end;
+  }).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  const sales = transactions.filter((item) => item.type === 'sale').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const expenses = transactions.filter((item) => item.type === 'expense').reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  return {
+    generatedAt: new Date().toISOString(),
+    business: {
+      code: business.code,
+      name: business.name,
+      type: business.type,
+      categoryLabel: business.categoryLabel,
+      registeredAt: business.registeredAt,
+    },
+    summary: {
+      days,
+      periodStart: window.start,
+      periodEnd: window.end,
+      transactionCount: transactions.length,
+      sales: Number(sales.toFixed(2)),
+      expenses: Number(expenses.toFixed(2)),
+      net: Number((sales - expenses).toFixed(2)),
+    },
+    transactions: transactions.slice(0, 200),
+    smsNotes: (database.smsNotes ?? []).filter((note) =>
+      note.businessCode === business.code || (!note.businessCode && note.phoneNumber === business.phoneNumber))
+      .sort((a, b) => String(b.receivedAt).localeCompare(String(a.receivedAt))).slice(0, 50),
+  };
+}
+
+function ownerIdentityFromRequest(request) {
+  const token = request.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  return verifyOwnerSessionToken(token, process.env.BIZPOA_OWNER_SESSION_SECRET);
+}
+
+const smsReplyWindow = new Map();
+function allowSmsAiReply(phoneNumber, now = Date.now()) {
+  const recent = (smsReplyWindow.get(phoneNumber) ?? []).filter((timestamp) => now - timestamp < 60 * 60 * 1000);
+  if (recent.length >= 5) {
+    smsReplyWindow.set(phoneNumber, recent);
+    return false;
+  }
+  recent.push(now);
+  smsReplyWindow.set(phoneNumber, recent);
+  return true;
+}
+
+async function processIncomingSms(message, messageId) {
+  const duplicate = messageId
+    ? await store.read((database) => (database.smsNotes ?? []).some((note) => note.messageId === messageId))
+    : false;
+  if (duplicate) return;
+
+  const language = await saveSmsLanguage(message, store);
+  const business = language ? null : await store.read((database) => smsBusinessForSender(database, message.phoneNumber, message.text));
+  const languagePreference = language ?? await store.read((database) => database.users[message.phoneNumber]?.language ?? 'en');
+  const mayReply = Boolean(language || business) && allowSmsAiReply(message.phoneNumber);
+  const aiResult = business && mayReply
+    ? await analyzeBusinessSms({ text: message.text, business, language: languagePreference })
+    : null;
+  const analysis = aiResult?.ok ? aiResult.analysis : null;
+  const detailResult = language
+    ? { saved: false, reason: 'language_command' }
+    : await saveSmsBusinessDetail(message, store, { analysis, messageId });
+
+  console.log('Incoming SMS:', {
+    from: message.phoneNumber,
+    messageId: Boolean(messageId),
+    languageCommandAccepted: Boolean(language),
+    detailSaved: detailResult.saved,
+    detailReason: detailResult.saved ? undefined : detailResult.reason,
+    aiReplyReady: Boolean(analysis),
+  });
+
+  if ((language || business) && !mayReply) {
+    console.warn('Bizpoa SMS AI reply rate limit reached for a sender.');
+  } else if (mayReply && language) {
+    void sendSms({ to: message.phoneNumber, message: languageSavedSms(language) }).then((result) => {
+      if (result.sent) console.log('Bizpoa language SMS reply accepted:', result.statusCode);
+      else console.warn('Bizpoa language SMS reply not sent:', result.reason);
+    });
+  } else if (mayReply && detailResult.saved && detailResult.businessCode) {
+    const reply = analysis
+      ? `Bizpoa summary: ${analysis.summary}\n${analysis.reply}`
+      : fallbackSmsReply({ business, language: languagePreference });
+    void sendSms({ to: message.phoneNumber, message: reply }).then((result) => {
+      if (result.sent) console.log('Bizpoa AI SMS reply accepted:', result.statusCode);
+      else console.warn('Bizpoa AI SMS reply not sent:', result.reason);
+    });
+  }
+}
+
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
 
   if (request.method === 'GET' && url.pathname === '/health') {
     return sendText(response, 200, 'Bizpoa sandbox backend is running.');
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/business-auth/request-code') {
+    try {
+      const payload = await readJson(request);
+      const challenge = await createOwnerOtp(payload, { store });
+      if (challenge.reason === 'auth_not_configured') return sendJson(response, 503, { error: 'owner_login_not_configured' });
+      if (challenge.reason === 'rate_limited') return sendJson(response, 429, { error: 'too_many_code_requests' });
+      if (!challenge.ok && challenge.reason !== 'owner_not_found') return sendJson(response, 400, { error: 'invalid_business_details' });
+      if (challenge.ok) {
+        const sent = await sendSms({
+          to: challenge.phoneNumber,
+          message: `Bizpoa verification code: ${challenge.code}. It expires in 5 minutes. Do not share this code.`,
+        });
+        if (!sent.sent) {
+          await clearOwnerOtp(payload, store);
+          return sendJson(response, 503, { error: 'verification_sms_not_sent' });
+        }
+      }
+      return sendJson(response, 202, { message: 'If the Bizpoa ID and registered phone match, a verification code has been sent.' });
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message === 'Request body too large') {
+        return sendJson(response, 400, { error: 'Request body must be valid JSON and no larger than 64 KB.' });
+      }
+      console.error('Owner OTP request error:', error);
+      return sendJson(response, 500, { error: 'Could not request a Bizpoa verification code.' });
+    }
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/business-auth/verify-code') {
+    try {
+      const payload = await readJson(request);
+      const verified = await verifyOwnerOtp(payload, { store });
+      if (!verified.ok) {
+        const status = verified.reason === 'auth_not_configured' ? 503 : 401;
+        return sendJson(response, status, { error: verified.reason === 'auth_not_configured' ? 'owner_login_not_configured' : 'invalid_or_expired_code' });
+      }
+      return sendJson(response, 200, {
+        accessToken: verified.accessToken,
+        expiresAt: verified.expiresAt,
+        business: verified.business,
+      });
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message === 'Request body too large') {
+        return sendJson(response, 400, { error: 'Request body must be valid JSON and no larger than 64 KB.' });
+      }
+      console.error('Owner OTP verification error:', error);
+      return sendJson(response, 500, { error: 'Could not verify the Bizpoa code.' });
+    }
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/business/dashboard') {
+    const identity = ownerIdentityFromRequest(request);
+    if (!identity) return sendJson(response, 401, { error: 'business_session_required' });
+    const days = Number(url.searchParams.get('days') || 30);
+    if (!Number.isInteger(days) || days < 1 || days > 365) return sendJson(response, 400, { error: 'days_must_be_1_to_365' });
+    try {
+      const payload = await store.read((database) => businessDashboardData(database, identity, days));
+      if (!payload) return sendJson(response, 404, { error: 'business_not_found' });
+      return sendJson(response, 200, payload);
+    } catch (error) {
+      console.error('Business dashboard error:', error);
+      return sendJson(response, 500, { error: 'Could not load this business dashboard.' });
+    }
+  }
+
+  if (request.method === 'GET' && url.pathname === '/api/business/statement.csv') {
+    const identity = ownerIdentityFromRequest(request);
+    if (!identity) return sendJson(response, 401, { error: 'business_session_required' });
+    const days = Number(url.searchParams.get('days') || 30);
+    if (!Number.isInteger(days) || days < 1 || days > 365) return sendJson(response, 400, { error: 'days_must_be_1_to_365' });
+    const csv = await store.read((database) => {
+      const business = Object.values(database.businesses ?? {}).find((item) =>
+        item.code === identity.businessCode && item.phoneNumber === identity.phoneNumber);
+      return business ? buildStatementCsv(database, { businessCode: identity.businessCode, days }) : null;
+    });
+    if (!csv) return sendJson(response, 404, { error: 'business_not_found' });
+    response.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': `attachment; filename="bizpoa-${identity.businessCode}-${days}-day-ledger.csv"`,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    return response.end(csv);
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/business/statement-sms') {
+    const identity = ownerIdentityFromRequest(request);
+    if (!identity) return sendJson(response, 401, { error: 'business_session_required' });
+    try {
+      const payload = await readJson(request);
+      const days = Number(payload.days);
+      if (!Number.isInteger(days) || days < 1 || days > 365) return sendJson(response, 400, { error: 'days_must_be_1_to_365' });
+      const statement = await store.read((database) => {
+        const business = Object.values(database.businesses ?? {}).find((item) =>
+          item.code === identity.businessCode && item.phoneNumber === identity.phoneNumber);
+        if (!business) return null;
+        const language = database.users[identity.phoneNumber]?.language ?? 'en';
+        return { business, language, message: formatStatementSms(database, business, days, language) };
+      });
+      if (!statement) return sendJson(response, 404, { error: 'business_not_found' });
+      const result = await sendSms({ to: identity.phoneNumber, message: statement.message });
+      if (!result.sent) return sendJson(response, 502, { error: 'statement_sms_not_sent' });
+      return sendJson(response, 202, { sent: true, message: 'The statement summary was sent by SMS.' });
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message === 'Request body too large') {
+        return sendJson(response, 400, { error: 'Request body must be valid JSON and no larger than 64 KB.' });
+      }
+      console.error('Owner statement SMS error:', error);
+      return sendJson(response, 500, { error: 'Could not send the statement SMS.' });
+    }
+  }
+
+  const statementMatch = url.pathname.match(/^\/statement\/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\.csv$/);
+  if (request.method === 'GET' && statementMatch) {
+    const statement = verifyStatementDownloadToken(statementMatch[1], process.env.BIZPOA_STATEMENT_SECRET);
+    if (!statement) return sendText(response, 404, 'This Bizpoa statement link is invalid or has expired.');
+    try {
+      const csv = await store.read((database) => {
+        const business = Object.values(database.businesses ?? {}).find((item) => item.code === statement.businessCode);
+        return business ? buildStatementCsv(database, statement) : null;
+      });
+      if (!csv) return sendText(response, 404, 'This Bizpoa statement is no longer available.');
+      response.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="bizpoa-${statement.businessCode}-${statement.days}-day-ledger.csv"`,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      return response.end(csv);
+    } catch (error) {
+      console.error('Statement download error:', error);
+      return sendText(response, 500, 'Could not create this Bizpoa statement.');
+    }
   }
 
   if (request.method === 'GET' && url.pathname === '/api/dashboard') {
@@ -155,12 +401,22 @@ const server = http.createServer(async (request, response) => {
   if (request.method === 'POST' && url.pathname === '/ussd') {
     try {
       const form = await readForm(request);
-      const ussdResponse = await handleUssd({
+      const ussdResult = await handleUssdAction({
         sessionId: form.get('sessionId'),
         phoneNumber: form.get('phoneNumber'),
         text: form.get('text') ?? '',
-      }, store);
+      }, store, {
+        publicUrl: process.env.BIZPOA_PUBLIC_URL,
+        secret: process.env.BIZPOA_STATEMENT_SECRET,
+      });
+      const ussdResponse = ussdResult.response;
       sendText(response, 200, ussdResponse);
+      if (ussdResult.outboundSms) {
+        void sendSms(ussdResult.outboundSms).then((result) => {
+          if (result.sent) console.log('Bizpoa requested statement SMS accepted by Africa\'s Talking:', result.statusCode);
+          else console.warn('Bizpoa statement SMS not sent:', result.reason);
+        });
+      }
       if (/^END (?:Business registered|Biashara imesajiliwa)/.test(ussdResponse)) {
         const code = ussdResponse.match(/\bBZ-[A-Z0-9]{6}\b/)?.[0];
         const phoneNumber = form.get('phoneNumber');
@@ -185,24 +441,9 @@ const server = http.createServer(async (request, response) => {
         phoneNumber: form.get('from'),
         text: form.get('text') ?? '',
       };
-      const language = await saveSmsLanguage(message, store);
-      const detailResult = language ? { saved: false, reason: 'language_command' } : await saveSmsBusinessDetail(message, store);
-      console.log('Incoming SMS:', {
-        from: form.get('from'),
-        languageCommandAccepted: Boolean(language),
-        detailSaved: detailResult.saved,
-        detailReason: detailResult.saved ? undefined : detailResult.reason,
-      });
+      const messageId = form.get('id') || form.get('messageId') || form.get('linkId') || null;
       sendText(response, 200, 'OK');
-      if (detailResult.saved && detailResult.businessCode) {
-        void sendSms({
-          to: message.phoneNumber,
-          message: detailsSavedSms(detailResult.businessCode),
-        }).then((result) => {
-          if (result.sent) console.log('Bizpoa SMS detail confirmation accepted by Africa\'s Talking:', result.statusCode);
-          else console.warn('Bizpoa SMS detail confirmation not sent:', result.reason);
-        });
-      }
+      void processIncomingSms(message, messageId).catch((error) => console.error('Incoming SMS processing error:', error));
       return;
     } catch (error) {
       console.error('SMS callback error:', error);

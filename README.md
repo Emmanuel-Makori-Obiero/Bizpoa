@@ -1,12 +1,12 @@
 # Bizpoa — USSD/SMS business manager
 
-Bizpoa is a bilingual English/Kiswahili starter for small businesses. Owners register through Africa's Talking USSD, receive a unique Bizpoa ID by SMS when outbound SMS is configured, record sales and expenses, and can send code-prefixed business details back by SMS. A local admin dashboard shows registered businesses, recent transactions, and SMS notes.
+Bizpoa is a bilingual English/Kiswahili starter for small businesses. Owners can register over Africa's Talking USSD, record sales and expenses, receive a unique Bizpoa ID, use a private web dashboard for their own business, and exchange business information with the Bizpoa SMS assistant at **62073**. An admin dashboard remains available separately.
 
-This is a prototype, not production accounting software. Business data is kept in a local JSON file and summaries use UTC dates. The dashboard includes Gemini-reviewed transaction entry and an ElevenLabs browser voice agent; neither should be used as production accounting until the storage and security architecture is upgraded.
+This is a prototype, not production accounting software. Business data is still stored in a local JSON file and date summaries use UTC. Before real financial use, move the records to a database with row-level security, add backups and audit controls, and deploy the Node backend with persistent storage.
 
-## Run on Windows with Git Bash
+## Run locally on Windows with Git Bash
 
-Install Node.js 20 or newer and Git for Windows. In Git Bash, clone the repository and install the frontend dependency:
+Install Node.js 20 or newer and Git for Windows. Clone the repository, install dependencies, and create a local environment file:
 
 ```bash
 git clone https://github.com/Emmanuel-Makori-Obiero/Bizpoa.git
@@ -16,64 +16,76 @@ cp .env.example .env
 notepad .env
 ```
 
-Set `BIZPOA_ADMIN_EMAIL` in `.env` to the one email account allowed to open the admin dashboard. The Supabase URL and publishable key in `.env.example` point at the connected Bizpoa project and are public client configuration; never use a Supabase service-role key in the browser.
+Configure these values in `.env` or in the hosted Node backend's secret settings:
 
-Create an email/password user in the Supabase Auth section or use the sign-up form in the app, then confirm the email if Supabase requests it. Only the email matching `BIZPOA_ADMIN_EMAIL` is authorized by the Node backend. Do not share the password in chat or commit `.env`; it is ignored by Git. To enable AI transaction review, the current Node backend needs `GEMINI_API_KEY` in its own environment (for local development, `.env`; for a hosted Node backend, its server environment settings). A key stored only as a Supabase Edge Function secret is not automatically available to this Node server. For Africa's Talking sandbox SMS, set `AT_API_KEY` and leave `AT_ENV=sandbox` and `AT_USERNAME=sandbox`.
+- `BIZPOA_ADMIN_EMAIL`: the one Supabase Auth email permitted to access the admin dashboard.
+- `BIZPOA_OWNER_SESSION_SECRET`: a randomly generated secret of at least 32 characters. It signs business-owner sessions; keep it only on the backend.
+- `BIZPOA_STATEMENT_SECRET`: a separate random secret of at least 32 characters for expiring CSV statement links.
+- `BIZPOA_PUBLIC_URL`: the public HTTPS origin of the Node backend, with no route suffix, such as `https://api.example.com`. It must be reachable by owners who receive CSV links.
+- `AT_API_KEY`, `AT_USERNAME`, and `AT_ENV`: Africa's Talking SMS configuration. Keep `AT_ENV=sandbox` while testing. Live SMS can incur charges; use the provider's configured service number/shortcode, including **62073** where provisioned.
+- `GEMINI_API_KEY`: enables the natural-language SMS assistant and the admin transaction-review feature. It must be available to the Node backend; a key stored only as a Supabase Edge Function secret is not automatically available to Node.
+
+The Supabase URL and publishable key in `.env.example` are public client configuration. Never put a Supabase service-role key, Gemini key, Africa's Talking key, or signing secret in browser code or commit `.env`.
+
+Create/confirm the admin email/password user in Supabase Auth. Only the email matching `BIZPOA_ADMIN_EMAIL` can use the admin dashboard.
 
 ### Start the backend
 
-Open the first Git Bash window in the `Bizpoa` folder and run:
+In the first Git Bash window, from the `Bizpoa` folder, run:
 
 ```bash
 npm run dev:backend
 ```
 
-The backend listens on `http://localhost:3000`. Check it in a browser at `http://localhost:3000/health`. It stores local records in `data/bizpoa.json`.
+The Node backend listens at `http://localhost:3000`; check `http://localhost:3000/health`. Local data is stored at `data/bizpoa.json`.
 
 ### Start the frontend
 
-Open a second Git Bash window, go to the same `Bizpoa` folder, and run:
+In a second Git Bash window, run:
 
 ```bash
 npm run dev:frontend
 ```
 
-Open the Vite URL printed in that terminal, normally `http://localhost:5173`. Sign in with the Supabase Auth email and password for the email configured as `BIZPOA_ADMIN_EMAIL`. The frontend sends the Supabase access token to the backend, which verifies it with Supabase before returning dashboard data.
+Open the Vite URL printed in the terminal, normally `http://localhost:5173`. The admin signs in with the configured Supabase email/password. Each registered business owner selects **Business owner? Open your dashboard**, enters their Bizpoa ID and registered phone, and verifies the one-time code sent by SMS. Owner dashboards require the backend signing secret and working outbound SMS; a sandbox SMS account may not deliver codes to ordinary handsets.
 
-Run automated tests from either Git Bash window in the project folder:
+Run all tests with:
 
 ```bash
 npm test
 ```
 
-## Connect the local backend to Africa's Talking
-
-Africa's Talking must be able to reach your computer over the public internet. In a third Git Bash window, run a tunnel such as:
+Build the frontend with:
 
 ```bash
-ngrok http 3000
+npm run build:frontend
 ```
 
-Copy the HTTPS forwarding address ngrok prints. In the Africa's Talking Sandbox dashboard, set the USSD callback to `https://YOUR-NGROK-ADDRESS/ussd`. Create/configure a sandbox SMS shortcode and set its incoming SMS callback to `https://YOUR-NGROK-ADDRESS/sms/incoming`. Keep the backend terminal and tunnel running while testing. Use the Sandbox simulator to dial the USSD service code; do not enter the callback URL as the dialled code.
+## Africa's Talking callbacks and shortcode
 
-A tunnel address can change when restarted. If it changes, update both callback URLs in the Africa's Talking dashboard. The currently running hosted test endpoint used earlier in the conversation is separate from this local Git Bash setup.
+For USSD/SMS webhooks, the Node backend must be reachable from Africa's Talking. During local testing, a tunnel such as `ngrok http 3000` can provide a temporary HTTPS address. In the Africa's Talking configuration, set:
 
-## How the product flow works
+- USSD callback: `https://YOUR-PUBLIC-HOST/ussd`
+- Incoming SMS callback: `https://YOUR-PUBLIC-HOST/sms/incoming`
 
-The first USSD session asks for English or Kiswahili. The main menu offers business registration, today's audit, business management, a seven-day audit, and language change. Registration collects category, business type, and business name. Bizpoa assigns each business a unique ID such as `BZ-ABC123`.
+The phone owner should send SMS to the Bizpoa shortcode **62073** when that shortcode is provisioned for the service. Use the Sandbox simulator for sandbox tests; live SMS and USSD require live provider credentials/configuration and may incur charges. A tunnel URL can change after restart, so update the callbacks when it does.
 
-When the Africa's Talking sandbox API key is configured, Bizpoa sends the ID and SMS instructions to the phone number used for registration. The owner can send a message such as `BZ-ABC123, located near the market; opens at 7am` to the SMS shortcode. Bizpoa checks that the ID matches the sender's registered phone before linking the detail to that business, then attempts to send a receipt SMS. SMS replies are received at `/sms/incoming`.
+## Product flows
 
-The sandbox routes SMS through its simulator rather than an ordinary handset. Live SMS requires live Africa's Talking credentials and may incur charges. Do not switch to `AT_ENV=live` while testing.
+The USSD flow offers registration, business management, a flexible audit/statement, and language selection. Entering `0` goes back one step; `00` returns to the Bizpoa home menu. **Manage business** asks for the Bizpoa ID and checks it against the calling phone before allowing sales or expenses to be recorded.
 
-## AI voice and call demo
+An owner can select any audit period from **1 to 365 days**. They can request a concise statement by SMS or, when `BIZPOA_PUBLIC_URL` and `BIZPOA_STATEMENT_SECRET` are valid, a CSV ledger link by SMS. CSV links are signed, expire after 24 hours, and download only that business's records. The website dashboard also offers a date range, CSV download, and SMS statement action.
 
-The sign-in page has **Try the AI voice demo**; signed-in users can also open **AI Call** in the dashboard. This starts a live voice conversation in the browser using the Bizpoa Voice Assistant ElevenLabs agent (`agent_5301m63nex5rfxe9phm907ng2r57`). Allow microphone access and speak naturally. The agent identifies itself as AI and can discuss a sale or expense, but it is not connected to business records and cannot save transactions.
+After registering, the owner receives their Bizpoa ID and instructions to text a message such as `BZ-ABC123, near the market; opens at 7am` to **62073** from the registered phone. Bizpoa verifies that the ID and sender match, stores the message with the business, and asks Gemini to summarize it and draft a short reply. The dashboard displays the message and AI summary; Bizpoa replies by SMS when the SMS gateway is configured. This text assistant does not create or edit transactions. If Gemini is unavailable, Bizpoa uses a simple receipt reply.
 
-The Overview's transaction assistant remains separate: it transcribes speech in the browser, sends the text to Gemini through the Node backend, and requires the owner to review and confirm before writing a demo transaction to the local JSON database. The Gemini key must therefore be configured in that backend's environment; storing it only in Supabase does not connect it automatically.
+## Voice and AI demo
 
-This is a browser voice conversation, not a telephone call. ElevenLabs currently has no phone number connected to this project. To place or receive real phone calls, connect a Twilio number or SIP trunk to ElevenLabs first; only then can an outbound test be made to a specific recipient after they agree to receive it. Once the website is published, restrict the ElevenLabs agent to the site domain using its allowlist to reduce unauthorized use.
+The sign-in page has **Try the AI voice demo**; the admin dashboard also has an **AI Call** view. These use the Bizpoa ElevenLabs conversational agent (`agent_5301m63nex5rfxe9phm907ng2r57`) for a browser microphone conversation. It identifies itself as AI and is not connected to business records or a phone number.
+
+The admin Overview's separate transaction assistant transcribes speech in the browser, asks Gemini to review the command, shows an editable proposal, and requires explicit confirmation before recording a demo transaction in the local JSON store. Do not treat it as production accounting.
+
+This is a browser conversation, not a telephone call. To place real calls, connect a Twilio number or SIP trunk to ElevenLabs and configure access restrictions for the published website.
 
 ## Before production
 
-Supabase Auth now protects the dashboard, but business records still live in a local JSON file and the conversational agent is not connected to the ledger. Before handling real business data, migrate records to Supabase with row-level security, keep the API keys in server-side secrets, add audit controls and backups, and test financial safeguards. Do not expose service-role, Gemini, or ElevenLabs keys to browser code.
+Supabase Auth protects the admin, and SMS OTP protects the individual owner dashboards, but application records are still local JSON. Deploying multiple Node instances or an ephemeral filesystem will break consistency and lose data. Migrate to Supabase or another persistent database with per-business row-level security, store all provider/signing secrets server-side, configure backups and audit trails, and test SMS delivery and financial safeguards before using real business records.

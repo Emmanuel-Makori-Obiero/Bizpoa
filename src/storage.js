@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const emptyDatabase = () => ({ users: {}, sessions: {}, transactions: [], businesses: {}, smsNotes: [] });
+const emptyDatabase = () => ({ users: {}, sessions: {}, transactions: [], businesses: {}, smsNotes: [], ownerOtpChallenges: {}, ownerOtpRateLimits: {} });
 
 export function createStore(filePath) {
   let queue = Promise.resolve();
@@ -15,6 +15,8 @@ export function createStore(filePath) {
         transactions: parsed.transactions ?? [],
         businesses: parsed.businesses ?? {},
         smsNotes: parsed.smsNotes ?? [],
+        ownerOtpChallenges: parsed.ownerOtpChallenges ?? {},
+        ownerOtpRateLimits: parsed.ownerOtpRateLimits ?? {},
       };
     } catch (error) {
       if (error.code === 'ENOENT') return emptyDatabase();

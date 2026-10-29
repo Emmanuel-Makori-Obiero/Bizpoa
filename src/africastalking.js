@@ -51,9 +51,15 @@ export async function sendSms({ to, message }, options = {}) {
 }
 
 export function registrationSms(code) {
-  return `Bizpoa: Your business ID is ${code}. Reply by SMS: ${code}, followed by your details (example: ${code}, near the market). Tuma maelezo kwa SMS ukianza na ${code}.`;
+  return `Bizpoa: Your business ID is ${code}. To send details, text ${code}, followed by your message, to 62073. Example: ${code}, near the market; opens at 7am. Use your registered phone. Need help? Send AI: followed by your question.`;
 }
 
 export function detailsSavedSms(code) {
-  return `Bizpoa: Details received for ${code}. Asante!`;
+  return `Bizpoa: Details received for ${code}. Text more details to 62073 starting with ${code}. Asante!`;
+}
+
+export function languageSavedSms(language) {
+  return language === 'sw'
+    ? 'Bizpoa: Lugha ya Kiswahili imehifadhiwa. Tuma ujumbe wako kwa 62073.'
+    : 'Bizpoa: English is saved as your language. Text your business message to 62073.';
 }
