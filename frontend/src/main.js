@@ -126,9 +126,12 @@ function showLogin(message = '') {
       state.session = result.data.session;
       await loadDashboard(true);
     } catch (error) {
-      const message = /failed to fetch|networkerror|load failed/i.test(String(error?.message || ''))
-        ? 'Could not reach Supabase Auth from this site. Check this deployment’s VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then rebuild/redeploy. Do not use the server secret key in the frontend.'
-        : (error.message || 'Sign-in failed. Check your email and password and try again.');
+      const rawMessage = String(error?.message || '');
+      const message = /unexpected token|not valid json|json.*parse|unexpected end/i.test(rawMessage)
+        ? 'Supabase Auth returned a non-JSON page. In Vercel, set VITE_SUPABASE_URL to your Supabase project API URL (https://<project-ref>.supabase.co), not your Bizpoa website URL, and set VITE_SUPABASE_PUBLISHABLE_KEY to that same project’s publishable key. Then redeploy.'
+        : (/failed to fetch|networkerror|load failed/i.test(rawMessage)
+          ? 'Could not reach Supabase Auth from this site. Check this deployment’s VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then rebuild/redeploy. Do not use the server secret key in the frontend.'
+          : (rawMessage || 'Sign-in failed. Check your email and password and try again.'));
       showLogin(message);
     }
   });
