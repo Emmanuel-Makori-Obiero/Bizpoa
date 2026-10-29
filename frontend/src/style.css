@@ -36,6 +36,12 @@ h1, h2, h3, p { margin-top: 0; }
 .login-form label { color: #3a5046; font-size: 12px; font-weight: 700; }
 .login-form input { width: 100%; height: 48px; padding: 0 14px; border: 1px solid #dce3dc; border-radius: 9px; outline: none; background: white; color: var(--ink); }
 .login-form input:focus { border-color: #438167; box-shadow: 0 0 0 3px #dff0e6; }
+.password-field { display: grid; gap: 10px; }
+.password-input-wrap { position: relative; }
+.password-input-wrap input { padding-right: 64px; }
+.password-toggle { position: absolute; top: 50%; right: 11px; padding: 6px 4px; transform: translateY(-50%); border: 0; background: transparent; color: #3f7457; font-size: 11px; font-weight: 700; }
+.password-toggle:hover { color: #1c4f37; text-decoration: underline; }
+.password-toggle:focus-visible { outline: 2px solid #438167; outline-offset: 2px; border-radius: 4px; }
 .button { display: inline-flex; justify-content: center; align-items: center; gap: 12px; min-height: 40px; padding: 0 15px; border: 0; border-radius: 8px; font-size: 12px; font-weight: 700; transition: transform .16s ease, background .16s ease; }
 .button:hover { transform: translateY(-1px); }
 .button-primary { height: 48px; margin-top: 4px; background: #1e5944; color: white; }

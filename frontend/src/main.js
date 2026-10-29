@@ -47,8 +47,10 @@ function showLogin(message = '') {
         <h1>Your business,<br><em>at a glance.</em></h1>
         <p class="login-copy">Enter the dashboard token configured in the Bizpoa backend <code>.env</code> file. The overview includes a prototype voice/text flow for reviewing and recording demo sales and expenses.</p>
         <form id="login-form" class="login-form">
-          <label for="admin-token">Dashboard token</label>
-          <input id="admin-token" name="token" type="password" autocomplete="current-password" placeholder="Paste your local admin token" required />
+          <div class="password-field"><label for="admin-token">Dashboard token</label><div class="password-input-wrap">
+            <input id="admin-token" name="token" type="password" autocomplete="current-password" placeholder="Paste your local admin token" required />
+            <button id="toggle-token-visibility" class="password-toggle" type="button" aria-controls="admin-token" aria-pressed="false" aria-label="Show dashboard token">Show</button>
+          </div></div>
           <button class="button button-primary" type="submit">Open dashboard <span aria-hidden="true">→</span></button>
         </form>
         <p class="login-error" role="alert">${escapeHtml(message)}</p>
@@ -60,6 +62,16 @@ function showLogin(message = '') {
         <div class="aside-lines"><i></i><i></i><i></i><i></i><i></i></div>
       </aside>
     </main>`;
+
+  root.querySelector('#toggle-token-visibility').addEventListener('click', (event) => {
+    const input = root.querySelector('#admin-token');
+    const button = event.currentTarget;
+    const reveal = input.type === 'password';
+    input.type = reveal ? 'text' : 'password';
+    button.textContent = reveal ? 'Hide' : 'Show';
+    button.setAttribute('aria-pressed', String(reveal));
+    button.setAttribute('aria-label', `${reveal ? 'Hide' : 'Show'} dashboard token`);
+  });
 
   root.querySelector('#login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
