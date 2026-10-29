@@ -43,7 +43,7 @@ function makeResponse() {
   };
 }
 
-test('Vercel function routes aliases, parsed bodies, and background webhook work', async (t) => {
+test('Vercel function routes aliases and schedules inbound SMS feedback after acknowledgement', async (t) => {
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
 
   const healthResponse = makeResponse();
@@ -72,15 +72,26 @@ test('Vercel function routes aliases, parsed bodies, and background webhook work
   assert.deepEqual(JSON.parse(authResponse.body), { error: 'owner_login_not_configured' });
 
   const scheduled = [];
+  const sent = [];
   const smsResponse = makeResponse();
   await handleRequest(makeRequest({
     url: '/api/sms/incoming',
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: { from: '+254700000099', text: 'Hello Bizpoa' },
-  }), smsResponse, { waitUntil: (promise) => scheduled.push(promise) });
+    body: { from: '+254700000098', text: 'Hi Bizpoa' },
+  }), smsResponse, {
+    waitUntil: (promise) => scheduled.push(promise),
+    sendSmsImpl: async (payload) => {
+      sent.push(payload);
+      return { sent: true, statusCode: 101 };
+    },
+  });
   assert.equal(smsResponse.statusCode, 200);
   assert.equal(smsResponse.body, 'OK');
   assert.equal(scheduled.length, 1);
   await Promise.all(scheduled);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, '+254700000098');
+  assert.match(sent[0].message, /register via USSD/i);
+  assert.match(sent[0].message, /62073/);
 });

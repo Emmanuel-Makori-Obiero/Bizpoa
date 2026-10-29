@@ -171,6 +171,23 @@ function ownerIdentityFromRequest(request) {
   return verifyOwnerSessionToken(token, process.env.BIZPOA_OWNER_SESSION_SECRET);
 }
 
+function unregisteredSmsReply(language) {
+  return language === 'sw'
+    ? 'Bizpoa: Tumepokea ujumbe wako. Sajili biashara kwa USSD, kisha tuma BZ-XXXXXX na maelezo yako kwa 62073 kutoka simu hiyo.'
+    : 'Bizpoa: Message received. Register via USSD to get your Bizpoa ID, then text BZ-XXXXXX and your business details to 62073 from that same phone.';
+}
+
+function unlinkedSmsReply(language, reason) {
+  if (reason === 'message_too_long') {
+    return language === 'sw'
+      ? 'Bizpoa: Ujumbe ni mrefu sana. Tuma ujumbe mfupi chini ya herufi 1,000.'
+      : 'Bizpoa: That message is too long. Please resend it in fewer than 1,000 characters.';
+  }
+  return language === 'sw'
+    ? 'Bizpoa: Ujumbe umepokelewa lakini haukuunganishwa. Tuma BZ-XXXXXX, kisha maelezo yako, kwa 62073 kutoka simu uliyosajili.'
+    : 'Bizpoa: We received your message but could not link it. Text BZ-XXXXXX, then your details, to 62073 from your registered phone.';
+}
+
 const smsReplyWindow = new Map();
 function allowSmsAiReply(phoneNumber, now = Date.now()) {
   const recent = (smsReplyWindow.get(phoneNumber) ?? []).filter((timestamp) => now - timestamp < 60 * 60 * 1000);
@@ -183,50 +200,75 @@ function allowSmsAiReply(phoneNumber, now = Date.now()) {
   return true;
 }
 
-async function processIncomingSms(message, messageId) {
-  const duplicate = messageId
-    ? await store.read((database) => (database.smsNotes ?? []).some((note) => note.messageId === messageId))
-    : false;
-  if (duplicate) return;
+export async function processIncomingSms(message, messageId, {
+  store: smsStore = store,
+  sendSmsImpl = sendSms,
+  analyzeSmsImpl = analyzeBusinessSms,
+  env = process.env,
+} = {}) {
+  const phoneNumber = String(message.phoneNumber ?? '').trim();
+  const text = String(message.text ?? '');
+  if (!phoneNumber) return { replied: false, reason: 'missing_sender' };
 
-  const language = await saveSmsLanguage(message, store);
-  const business = language ? null : await store.read((database) => smsBusinessForSender(database, message.phoneNumber, message.text));
-  const languagePreference = language ?? await store.read((database) => database.users[message.phoneNumber]?.language ?? 'en');
-  const mayReply = Boolean(language || business) && allowSmsAiReply(message.phoneNumber);
+  const duplicate = messageId
+    ? await smsStore.read((database) => (database.smsNotes ?? []).some((note) => note.messageId === messageId))
+    : false;
+  if (duplicate) return { replied: false, reason: 'duplicate_message' };
+
+  const normalizedMessage = { phoneNumber, text };
+  const language = await saveSmsLanguage(normalizedMessage, smsStore);
+  const business = language ? null : await smsStore.read((database) => smsBusinessForSender(database, phoneNumber, text));
+  const languagePreference = language ?? await smsStore.read((database) => database.users[phoneNumber]?.language ?? 'en');
+  const mayReply = allowSmsAiReply(phoneNumber);
   const aiResult = business && mayReply
-    ? await analyzeBusinessSms({ text: message.text, business, language: languagePreference })
+    ? await analyzeSmsImpl({ text, business, language: languagePreference }, { env })
     : null;
   const analysis = aiResult?.ok ? aiResult.analysis : null;
   const detailResult = language
     ? { saved: false, reason: 'language_command' }
-    : await saveSmsBusinessDetail(message, store, { analysis, messageId });
+    : business
+      ? await saveSmsBusinessDetail(normalizedMessage, smsStore, { analysis, messageId })
+      : { saved: false, reason: 'unregistered_sender' };
 
   console.log('Incoming SMS:', {
-    from: message.phoneNumber,
+    from: phoneNumber,
     messageId: Boolean(messageId),
     languageCommandAccepted: Boolean(language),
+    knownBusiness: Boolean(business),
     detailSaved: detailResult.saved,
     detailReason: detailResult.saved ? undefined : detailResult.reason,
     aiReplyReady: Boolean(analysis),
   });
 
-  if ((language || business) && !mayReply) {
+  if (!mayReply) {
     console.warn('Bizpoa SMS AI reply rate limit reached for a sender.');
-  } else if (mayReply && language) {
-    const result = await sendSms({ to: message.phoneNumber, message: languageSavedSms(language) });
-    if (result.sent) console.log('Bizpoa language SMS reply accepted:', result.statusCode);
-    else console.warn('Bizpoa language SMS reply not sent:', result.reason);
-  } else if (mayReply && detailResult.saved && detailResult.businessCode) {
-    const reply = analysis
+    return { replied: false, reason: 'rate_limited' };
+  }
+
+  let reply;
+  if (language) {
+    reply = languageSavedSms(language);
+  } else if (!business) {
+    reply = unregisteredSmsReply(languagePreference);
+  } else if (!detailResult.saved || !detailResult.businessCode) {
+    reply = unlinkedSmsReply(languagePreference, detailResult.reason);
+  } else {
+    reply = analysis
       ? `Bizpoa summary: ${analysis.summary}\n${analysis.reply}`
       : fallbackSmsReply({ business, language: languagePreference });
-    const result = await sendSms({ to: message.phoneNumber, message: reply });
-    if (result.sent) console.log('Bizpoa AI SMS reply accepted:', result.statusCode);
-    else console.warn('Bizpoa AI SMS reply not sent:', result.reason);
   }
+
+  const result = await sendSmsImpl({ to: phoneNumber, message: reply }, { env });
+  if (result.sent) console.log('Bizpoa incoming SMS feedback accepted:', result.statusCode);
+  else console.warn('Bizpoa incoming SMS feedback not sent:', result.reason);
+  return { replied: Boolean(result.sent), reason: result.reason ?? null, message: reply };
 }
 
-export async function handleRequest(request, response, { waitUntil = (promise) => { void promise; } } = {}) {
+export async function handleRequest(request, response, {
+  waitUntil = (promise) => { void promise; },
+  sendSmsImpl = sendSms,
+  analyzeSmsImpl = analyzeBusinessSms,
+} = {}) {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
   if (url.pathname === '/api/health') url.pathname = '/health';
   else if (url.pathname === '/api/ussd') url.pathname = '/ussd';
@@ -485,7 +527,10 @@ export async function handleRequest(request, response, { waitUntil = (promise) =
       };
       const messageId = form.get('id') || form.get('messageId') || form.get('linkId') || null;
       sendText(response, 200, 'OK');
-      scheduleBackground(processIncomingSms(message, messageId), 'Incoming SMS processing error:');
+      scheduleBackground(processIncomingSms(message, messageId, {
+        sendSmsImpl,
+        analyzeSmsImpl,
+      }), 'Incoming SMS processing error:');
       return;
     } catch (error) {
       console.error('SMS callback error:', error);
