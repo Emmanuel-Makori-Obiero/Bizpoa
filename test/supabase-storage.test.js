@@ -190,3 +190,44 @@ test('Supabase storage reloads and retries a transaction after another instance 
   assert.equal(state.users['+254700000001'].language, 'en');
   assert.equal(state.users['+254700000002'].language, 'sw');
 });
+
+test('Supabase storage sends deletions for every Bizpoa collection in an atomic reset transaction', async () => {
+  const state = emptyState();
+  const phoneNumber = '+254700000001';
+  const otpKey = 'BZ-ABC123:+254700000001';
+  const noteId = '11111111-1111-4111-8111-111111111111';
+  state.users[phoneNumber] = { language: 'en' };
+  state.sessions['USSD-SESSION-1'] = { phoneNumber, stage: 'main' };
+  state.businesses[phoneNumber] = { code: 'BZ-ABC123', name: 'Amina Shop', phoneNumber };
+  state.transactions = [{ id: 'SALE-1', phoneNumber, businessCode: 'BZ-ABC123', type: 'sale', amount: 300, date: '2026-10-29' }];
+  state.smsNotes = [{ id: noteId, phoneNumber, businessCode: 'BZ-ABC123', text: 'Open at 7am' }];
+  state.ownerOtpChallenges[otpKey] = { codeHash: 'hash', expiresAt: 1, sentAt: 1, attempts: 0 };
+  state.ownerOtpRateLimits[otpKey] = { requestTimes: [1], lastSentAt: 1 };
+  let delta;
+  const store = createSupabaseStore({
+    env,
+    fetchImpl: async (url, options) => {
+      if (url.endsWith('/bizpoa_read_state')) return response(state);
+      delta = JSON.parse(options.body).p_delta;
+      return response({ conflict: false, revision: state.revision + 1 });
+    },
+  });
+
+  await store.transact((database) => {
+    database.users = {};
+    database.sessions = {};
+    database.businesses = {};
+    database.transactions = [];
+    database.smsNotes = [];
+    database.ownerOtpChallenges = {};
+    database.ownerOtpRateLimits = {};
+  });
+
+  assert.deepEqual(delta.businesses_delete, [phoneNumber]);
+  assert.deepEqual(delta.users_delete, [phoneNumber]);
+  assert.deepEqual(delta.sessions_delete, ['USSD-SESSION-1']);
+  assert.deepEqual(delta.transactions_delete, ['SALE-1']);
+  assert.deepEqual(delta.sms_notes_delete, [noteId]);
+  assert.deepEqual(delta.otp_challenges_delete, [otpKey]);
+  assert.deepEqual(delta.otp_rate_limits_delete, [otpKey]);
+});

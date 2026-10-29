@@ -268,6 +268,8 @@ export async function handleRequest(request, response, {
   waitUntil = (promise) => { void promise; },
   sendSmsImpl = sendSms,
   analyzeSmsImpl = analyzeBusinessSms,
+  store: requestStore = store,
+  authenticateAdmin: adminAuthenticator = authenticateAdmin,
 } = {}) {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
   if (url.pathname === '/api/health') url.pathname = '/health';
@@ -425,6 +427,40 @@ export async function handleRequest(request, response, {
     } catch (error) {
       console.error('Statement download error:', error);
       return sendText(response, 500, 'Could not create this Bizpoa statement.');
+    }
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/admin/clear-data') {
+    const auth = await adminAuthenticator(request);
+    if (!auth.ok) return sendJson(response, auth.status, { error: auth.error });
+    try {
+      const payload = await readJson(request);
+      if (payload.confirmation !== 'CLEAR ALL BIZPOA DATA') {
+        return sendJson(response, 400, { error: 'Type CLEAR ALL BIZPOA DATA to confirm this action.' });
+      }
+      const cleared = await requestStore.transact((database) => {
+        const counts = {
+          businesses: Object.keys(database.businesses ?? {}).length,
+          transactions: (database.transactions ?? []).length,
+          smsNotes: (database.smsNotes ?? []).length,
+        };
+        database.users = {};
+        database.sessions = {};
+        database.transactions = [];
+        database.businesses = {};
+        database.smsNotes = [];
+        database.ownerOtpChallenges = {};
+        database.ownerOtpRateLimits = {};
+        return counts;
+      });
+      console.info('Bizpoa application data cleared by admin:', { userId: auth.user.id, counts: cleared });
+      return sendJson(response, 200, { ok: true, cleared });
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message === 'Request body too large') {
+        return sendJson(response, 400, { error: 'Request body must be valid JSON and no larger than 64 KB.' });
+      }
+      console.error('Admin data clear error:', error);
+      return sendJson(response, 500, { error: 'Could not clear Bizpoa application data.' });
     }
   }
 

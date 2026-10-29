@@ -26,6 +26,7 @@ Also configure these backend values as needed:
 - `BIZPOA_OWNER_SESSION_SECRET`: a randomly generated secret of at least 32 characters for signed business-owner sessions.
 - `BIZPOA_STATEMENT_SECRET`: a separate random secret of at least 32 characters for expiring CSV statement links.
 - `BIZPOA_PUBLIC_URL`: the public HTTPS origin of the deployed site/backend, with no route suffix, such as `https://bizpoa.example`.
+- `SUPABASE_PUBLISHABLE_KEY`: the public Supabase key used by the backend to verify admin access tokens. This is separate from the server-only database secret.
 - `AT_API_KEY`, `AT_USERNAME`, and `AT_ENV`: Africa's Talking SMS configuration. Keep `AT_ENV=sandbox` while testing. Live SMS can incur charges; use the provider's configured service shortcode, including **62073** where provisioned.
 - `GEMINI_API_KEY`: enables the natural-language SMS assistant and admin transaction-review feature. It must be available to the backend; a key stored only as a Supabase Edge Function secret is not automatically available to Node.
 - `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`: optional public frontend build-time overrides; the current project values are already used as defaults.
@@ -66,12 +67,14 @@ The repository now includes `vercel.json` and one shared Node.js Function at `ap
 
 To deploy, import this repository into Vercel and keep the **Project Root Directory** at the repository root. The build command and output directory are already declared in `vercel.json`. Add environment variables in Vercel Project Settings for the environments you will use (Preview and Production as appropriate):
 
-- Backend: `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `BIZPOA_STORAGE_DRIVER=supabase`, `BIZPOA_ADMIN_EMAIL`, `BIZPOA_OWNER_SESSION_SECRET`, `BIZPOA_STATEMENT_SECRET`, `BIZPOA_PUBLIC_URL`, `GEMINI_API_KEY`, `AT_API_KEY`, `AT_USERNAME`, and `AT_ENV=sandbox` while testing.
+- Backend: `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY`, `BIZPOA_STORAGE_DRIVER=supabase`, `BIZPOA_ADMIN_EMAIL`, `BIZPOA_OWNER_SESSION_SECRET`, `BIZPOA_STATEMENT_SECRET`, `BIZPOA_PUBLIC_URL`, `GEMINI_API_KEY`, `AT_API_KEY`, `AT_USERNAME`, and `AT_ENV=sandbox` while testing.
 - Frontend build: `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`. These are public values; do not put the Supabase secret key in a `VITE_` variable.
 
 Set `BIZPOA_PUBLIC_URL` to the Vercel HTTPS origin after it is assigned, then configure Africa's Talking callbacks to `https://YOUR-VERCEL-DOMAIN/ussd` and `https://YOUR-VERCEL-DOMAIN/sms/incoming`. Redeploy after changing environment variables; frontend `VITE_` values are embedded at build time. Use sandbox credentials and the provider simulator before enabling live SMS/USSD.
 
 For an end-to-end local Vercel runtime check, run `npx vercel login`, `npx vercel link`, then `npx vercel dev`. The repository tests also exercise the shared function handler and parsed webhook bodies. A code/config change does not deploy by itself: Vercel must be connected to this repository or you must run a deployment command from an authenticated Vercel CLI.
+
+If browser sign-in shows **Failed to fetch**, confirm the production build has the right `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`, then redeploy because `VITE_` values are embedded when Vite builds. The backend separately needs `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `BIZPOA_ADMIN_EMAIL` to verify the session and load `/api/dashboard`. Do not put `SUPABASE_SECRET_KEY` in the frontend. In the browser Network panel, a failed request to `/auth/v1/token` points to frontend/Auth reachability or configuration; a failure at `/api/dashboard` points to the Vercel function or its backend environment instead.
 
 ## Africa's Talking callbacks and shortcode
 
@@ -92,5 +95,7 @@ After registering, the owner receives their Bizpoa ID and instructions to text a
 The sign-in page has **Try the AI voice demo**; the admin dashboard also has an **AI Call** view. These use the Bizpoa ElevenLabs conversational agent (`agent_5301m63nex5rfxe9phm907ng2r57`) for a browser microphone conversation. It identifies itself as AI and is not connected to business records or a phone number.
 
 The admin Overview's separate transaction assistant transcribes speech in the browser, asks Gemini to review the command, shows an editable proposal, and requires explicit confirmation before recording a transaction in the configured backend store.
+
+Admins can open **Data & settings** and clear all Bizpoa operational records. The action requires re-entering the admin password, typing `CLEAR ALL BIZPOA DATA`, and confirming the browser prompt. It clears businesses, transactions, SMS details, language preferences, USSD sessions, and owner OTP state; it does not delete the Supabase Auth admin account or project configuration. Make an external backup first because the reset cannot be undone from the dashboard.
 
 This is a browser conversation, not a telephone call. To place real calls, connect a Twilio number or SIP trunk to ElevenLabs and configure access restrictions for the published website.

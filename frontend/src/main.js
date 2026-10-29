@@ -27,6 +27,9 @@ const state = {
   ownerDays: 30,
   ownerBusy: false,
   ownerStatus: '',
+  clearDataBusy: false,
+  clearDataError: '',
+  clearDataNotice: '',
 };
 
 const escapeHtml = (value = '') => String(value).replace(/[&<>"']/g, (character) => ({
@@ -123,7 +126,10 @@ function showLogin(message = '') {
       state.session = result.data.session;
       await loadDashboard(true);
     } catch (error) {
-      showLogin(error.message || 'Sign-in failed. Check your email and password and try again.');
+      const message = /failed to fetch|networkerror|load failed/i.test(String(error?.message || ''))
+        ? 'Could not reach Supabase Auth from this site. Check this deployment’s VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY, then rebuild/redeploy. Do not use the server secret key in the frontend.'
+        : (error.message || 'Sign-in failed. Check your email and password and try again.');
+      showLogin(message);
     }
   });
 }
@@ -361,6 +367,7 @@ const views = [
   { id: 'transactions', label: 'Transactions', mark: 'T' },
   { id: 'sms', label: 'SMS details', mark: 'S' },
   { id: 'voice', label: 'AI Call', mark: 'C' },
+  { id: 'settings', label: 'Data & settings', mark: 'D' },
 ];
 
 function shell() {
@@ -397,6 +404,62 @@ function shell() {
     showLogin();
   });
   bindVoiceAssistant();
+  bindDataSettings();
+}
+
+function bindDataSettings() {
+  const form = root.querySelector('#clear-data-form');
+  if (!form) return;
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.clearDataBusy) return;
+    const formData = new FormData(form);
+    const confirmation = String(formData.get('confirmation') || '').trim();
+    const password = String(formData.get('password') || '');
+    state.clearDataError = '';
+    state.clearDataNotice = '';
+    if (confirmation !== 'CLEAR ALL BIZPOA DATA') {
+      state.clearDataError = 'The confirmation phrase does not match. No records were changed.';
+      shell();
+      return;
+    }
+    if (!window.confirm('Permanently delete all Bizpoa businesses, transactions, SMS details, and owner sessions? This cannot be undone.')) return;
+
+    state.clearDataBusy = true;
+    shell();
+    let phase = 'auth';
+    try {
+      const reauthenticated = await supabase.auth.signInWithPassword({
+        email: state.session?.user?.email || '',
+        password,
+      });
+      if (reauthenticated.error) throw reauthenticated.error;
+      if (!reauthenticated.data.session?.access_token) throw new Error('Please sign in again before clearing records.');
+      state.session = reauthenticated.data.session;
+      phase = 'backend';
+      const response = await fetch('/api/admin/clear-data', {
+        method: 'POST',
+        headers: authHeaders(true),
+        body: JSON.stringify({ confirmation }),
+        cache: 'no-store',
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Could not clear Bizpoa records (HTTP ${response.status}).`);
+      const cleared = payload.cleared || {};
+      state.clearDataNotice = `Cleared ${cleared.businesses || 0} businesses, ${cleared.transactions || 0} transactions, and ${cleared.smsNotes || 0} SMS details. Owner and USSD sessions were also cleared; your admin login remains.`;
+      await loadDashboard();
+    } catch (error) {
+      state.clearDataError = /failed to fetch|networkerror|load failed/i.test(String(error?.message || ''))
+        ? (phase === 'auth'
+          ? 'Could not reach Supabase Auth. Check the frontend Supabase URL/key and try again.'
+          : 'Could not reach the Bizpoa backend. Check the deployment and try again; no success was confirmed.')
+        : (error.message || 'Could not clear Bizpoa records.');
+      shell();
+    } finally {
+      state.clearDataBusy = false;
+      if (state.session && state.view === 'settings') shell();
+    }
+  });
 }
 
 function headingCopy(view) {
@@ -406,6 +469,7 @@ function headingCopy(view) {
     transactions: 'Sales and expenses recorded by business owners.',
     sms: 'Extra business information sent by SMS.',
     voice: 'Start a live voice conversation with the Bizpoa AI assistant.',
+    settings: 'Review and manage Bizpoa application data.',
   }[view];
 }
 
@@ -415,7 +479,27 @@ function renderView() {
   if (state.view === 'transactions') return renderTransactions();
   if (state.view === 'sms') return renderSmsNotes();
   if (state.view === 'voice') return renderVoiceCallView();
+  if (state.view === 'settings') return renderDataSettings();
   return renderOverview();
+}
+
+function renderDataSettings() {
+  return `
+    <section class="panel reset-panel" aria-labelledby="reset-title">
+      <p class="eyebrow reset-eyebrow">DESTRUCTIVE ACTION</p>
+      <h2 id="reset-title">Clear Bizpoa business records</h2>
+      <p class="reset-copy">This permanently deletes all registered businesses, sales and expenses, owner SMS details, language preferences, USSD sessions, and owner verification codes. Your admin login, Supabase project, and deployment settings are not deleted.</p>
+      <div class="reset-warning"><strong>Make a backup first.</strong> This cannot be undone from Bizpoa.</div>
+      ${state.clearDataNotice ? `<p class="reset-result" role="status">${escapeHtml(state.clearDataNotice)}</p>` : ''}
+      ${state.clearDataError ? `<p class="reset-error" role="alert">${escapeHtml(state.clearDataError)}</p>` : ''}
+      <form id="clear-data-form" class="reset-form">
+        <label for="clear-data-confirmation">Type <code>CLEAR ALL BIZPOA DATA</code> to confirm</label>
+        <input id="clear-data-confirmation" name="confirmation" autocomplete="off" ${state.clearDataBusy ? 'disabled' : ''} required />
+        <label for="clear-data-password">Re-enter your admin password</label>
+        <input id="clear-data-password" name="password" type="password" autocomplete="current-password" ${state.clearDataBusy ? 'disabled' : ''} required />
+        <button class="button button-danger" type="submit" ${state.clearDataBusy ? 'disabled' : ''}>${state.clearDataBusy ? 'Clearing records…' : 'Clear all Bizpoa records'}</button>
+      </form>
+    </section>`;
 }
 
 function renderVoiceCallView() {
@@ -733,7 +817,9 @@ async function loadDashboard(fromLogin = false) {
     state.data = payload;
     shell();
   } catch {
-    state.error = 'Cannot reach the backend. Start it with npm run dev:backend and try again.';
+    state.error = import.meta.env.DEV
+      ? 'Cannot reach the local Bizpoa backend. Start it with npm run dev:backend and try again.'
+      : 'Cannot reach the Bizpoa API. Check that this Vercel deployment includes /api/dashboard and that its backend Supabase environment variables are configured.';
     if (state.data) shell(); else showLogin(state.error);
   } finally {
     state.loading = false;
