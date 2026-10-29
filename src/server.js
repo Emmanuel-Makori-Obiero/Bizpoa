@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { createStore } from './storage.js';
+import { createSupabaseStore } from './supabase-storage.js';
 import { createAdminAuthenticator } from './auth.js';
 import { handleUssdAction, saveSmsBusinessDetail, saveSmsLanguage } from './ussd.js';
 import { languageSavedSms, registrationSms, sendSms } from './africastalking.js';
@@ -30,7 +31,9 @@ function loadLocalEnvironment() {
 
 loadLocalEnvironment();
 const dataFile = process.env.DATA_FILE || path.resolve(here, '../data/bizpoa.json');
-const store = createStore(dataFile);
+const storageDriver = process.env.BIZPOA_STORAGE_DRIVER || (process.env.NODE_ENV === 'production' ? 'supabase' : 'json');
+if (!['json', 'supabase'].includes(storageDriver)) throw new Error('BIZPOA_STORAGE_DRIVER must be either "json" or "supabase".');
+const store = storageDriver === 'supabase' ? createSupabaseStore() : createStore(dataFile);
 const port = Number(process.env.PORT || 3000);
 const maxBodyBytes = 64 * 1024;
 const authenticateAdmin = createAdminAuthenticator({ env: process.env });
@@ -207,7 +210,12 @@ const server = http.createServer(async (request, response) => {
   const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
 
   if (request.method === 'GET' && url.pathname === '/health') {
-    return sendText(response, 200, 'Bizpoa sandbox backend is running.');
+    try {
+      await store.read(() => true);
+      return sendText(response, 200, `Bizpoa backend and ${storageDriver} storage are ready.`);
+    } catch {
+      return sendText(response, 503, 'Bizpoa backend storage is unavailable.');
+    }
   }
 
   if (request.method === 'POST' && url.pathname === '/api/business-auth/request-code') {
@@ -456,7 +464,7 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`Bizpoa sandbox backend listening on http://localhost:${port}`);
-  console.log(`Data file: ${dataFile}`);
+  console.log(`Storage driver: ${storageDriver}${storageDriver === 'json' ? ` (${dataFile})` : ''}`);
 });
 
 function stop() {

@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { createStatementDownloadUrl, formatStatementSms, statementLinkConfigured } from './statements.js';
 
 const languageChoices = {
@@ -193,8 +193,7 @@ function makeBusinessCode(database) {
 export async function handleUssdAction({ sessionId, phoneNumber, text = '' }, store, statementOptions = {}) {
   if (!sessionId || !phoneNumber) return { response: end('Invalid USSD request.'), outboundSms: null };
 
-  let outboundSms = null;
-  const response = await store.transact(async (database) => {
+  const result = await store.transact(async (database) => {
     database.businesses ??= {};
     database.smsNotes ??= [];
     const user = database.users[phoneNumber] ?? {};
@@ -390,9 +389,8 @@ export async function handleUssdAction({ sessionId, phoneNumber, text = '' }, st
             database.sessions[sessionId] = session;
             return con(`${messages.auditDeliveryPrompt(Boolean(session.documentAvailable))}\n${messages.invalidMenu}`);
           }
-          outboundSms = { to: phoneNumber, message };
           delete database.sessions[sessionId];
-          return end(messages.statementSending);
+          return { response: end(messages.statementSending), outboundSms: { to: phoneNumber, message } };
         }
         if (value === '2') {
           const url = createStatementDownloadUrl({
@@ -406,12 +404,9 @@ export async function handleUssdAction({ sessionId, phoneNumber, text = '' }, st
             database.sessions[sessionId] = session;
             return con(`${messages.auditDeliveryPrompt(Boolean(session.documentAvailable))}\n${messages.documentUnavailable}`);
           }
-          outboundSms = {
-            to: phoneNumber,
-            message: `Bizpoa: ${business.code} ledger for the last ${session.auditDays} days. Download the CSV (expires in 24 hours): ${url}`,
-          };
+          const message = `Bizpoa: ${business.code} ledger for the last ${session.auditDays} days. Download the CSV (expires in 24 hours): ${url}`;
           delete database.sessions[sessionId];
-          return end(messages.documentSending);
+          return { response: end(messages.documentSending), outboundSms: { to: phoneNumber, message } };
         }
         database.sessions[sessionId] = session;
         return con(`${messages.auditDeliveryPrompt(Boolean(session.documentAvailable))}\n${messages.invalidMenu}`);
@@ -459,7 +454,7 @@ export async function handleUssdAction({ sessionId, phoneNumber, text = '' }, st
     database.sessions[sessionId] = session;
     return promptForStage(session);
   });
-  return { response, outboundSms };
+  return typeof result === 'string' ? { response: result, outboundSms: null } : result;
 }
 
 export async function handleUssd(request, store) {
@@ -511,6 +506,7 @@ export async function saveSmsBusinessDetail({ phoneNumber, text = '' }, store, {
 
     if (!detail) return { saved: false, reason: 'missing_details' };
     database.smsNotes.push({
+      id: randomUUID(),
       phoneNumber,
       businessCode: business?.code ?? null,
       text: detail,

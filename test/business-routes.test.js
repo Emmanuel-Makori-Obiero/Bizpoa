@@ -97,6 +97,7 @@ test('business HTTP routes enforce owner-specific access and deliver statements 
     env: {
       ...process.env,
       PORT: String(port),
+      BIZPOA_STORAGE_DRIVER: 'json',
       DATA_FILE: dataFile,
       BIZPOA_OWNER_SESSION_SECRET: ownerSecret,
       BIZPOA_STATEMENT_SECRET: statementSecret,

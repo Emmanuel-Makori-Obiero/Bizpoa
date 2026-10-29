@@ -1,15 +1,13 @@
 # Bizpoa project notes
 
-Bizpoa is a bilingual English/Kiswahili prototype business manager using Africa's Talking USSD/SMS, a Node backend, and a Vite website.
+Bizpoa is a bilingual English/Kiswahili prototype business manager using Africa's Talking USSD/SMS, a Node backend, a Vite website, and Supabase Auth/Postgres.
 
-Current capabilities:
-- USSD registration assigns a distinct `BZ-XXXXXX` Bizpoa ID and explains how to text Bizpoa at shortcode **62073** from the registered phone.
-- USSD `0` backs up one step and `00` returns home. Business management requires the caller's Bizpoa ID to match the registered phone before recording a sale or expense.
-- Audits accept a chosen period from 1 to 365 days. Owners can receive an SMS summary or a signed, 24-hour CSV link when statement settings are configured.
-- Every registered owner has a private dashboard entry point. Access requires the Bizpoa ID, registered phone, and a one-time SMS code; sessions are signed server-side and limited to one business.
-- The owner dashboard offers a custom audit period, filtered ledger, CSV download, statement by SMS, owner SMS notes, and Gemini summaries.
-- Incoming SMS details are matched against the business ID and registered sender. Gemini summarizes safe, text-only business messages and drafts a reply; AI is not allowed to create or edit ledger transactions. A generic receipt reply is used if Gemini is unavailable.
-- A separate Supabase Auth allowlist protects the admin dashboard. The web voice-call demo uses ElevenLabs agent `agent_5301m63nex5rfxe9phm907ng2r57`; it is browser-only and not connected to phone calls or business records.
-- Root npm scripts run the frontend and backend separately; tests include owner-auth and HTTP business-isolation checks.
+Production storage uses the `bizpoa_*` relational tables created by `supabase/migrations/20261029_bizpoa_storage.sql`. RLS is enabled on every table, with no browser-role policies. The Node backend calls private `bizpoa_read_state` and `bizpoa_apply_state_delta` RPCs using `SUPABASE_SECRET_KEY` (or legacy `SUPABASE_SERVICE_ROLE_KEY`) kept only on the backend. The write RPC uses a global revision check and atomic transaction; the existing callback-based application logic is preserved over relational rows. The app currently loads a relational snapshot for each operation, which is suitable for this prototype but should be replaced with targeted indexed repository queries as volume grows.
 
-Configuration required for a deployed owner portal: `BIZPOA_OWNER_SESSION_SECRET` and `BIZPOA_STATEMENT_SECRET` (random secrets, 32+ characters), `BIZPOA_PUBLIC_URL` (public HTTPS Node backend origin), Africa's Talking SMS credentials, and a backend `GEMINI_API_KEY` for AI summaries. A Gemini key saved only as a Supabase Edge Function secret is not automatically available to this Node backend. The current store is `data/bizpoa.json`; this prototype is not production-ready and needs durable database storage, row-level security, backups, and audit controls before handling real financial records.
+The database stores businesses, transactions, SMS notes, language preferences, USSD sessions, owner OTP challenges, and OTP rate limits. The admin UI still authenticates with Supabase Auth and `BIZPOA_ADMIN_EMAIL`; owner dashboards use the Bizpoa ID, registered phone, and SMS OTP. Current project was initially empty and no local `data/bizpoa.json` was present, so no old records were imported.
+
+USSD registration assigns a distinct `BZ-XXXXXX` Bizpoa ID and explains how to text Bizpoa at **62073** from the registered phone. USSD `0` backs up one step and `00` returns home. Management verifies ID plus caller phone before recording sales/expenses. Audits accept 1–365 days and offer SMS summary or a signed 24-hour CSV link when configured. The owner dashboard supports a selected date range, filtered ledger, CSV download, statement-by-SMS, stored owner notes, and Gemini summaries.
+
+Incoming SMS details are matched against the registered sender and business ID. Gemini can summarize a safe text message and draft a short reply; it cannot create or edit ledger transactions. A simple receipt reply is used if Gemini is unavailable. The browser voice-call demo uses ElevenLabs agent `agent_5301m63nex5rfxe9phm907ng2r57`; it is not connected to phone calls or business records.
+
+Local development uses `BIZPOA_STORAGE_DRIVER=json` from `.env.example`; production defaults to Supabase. Deployments must supply the Supabase server secret, `BIZPOA_OWNER_SESSION_SECRET`, `BIZPOA_STATEMENT_SECRET`, `BIZPOA_PUBLIC_URL`, Africa's Talking credentials, and backend `GEMINI_API_KEY`. No Vercel routing configuration exists yet; the project import screen requires confirmed service names and public route rewrites. Vite's `/api` proxy only applies during local development. The backend currently runs as a Node HTTP server rather than a Vercel Function handler.
